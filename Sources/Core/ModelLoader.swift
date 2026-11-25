@@ -46,6 +46,45 @@ public enum ModelLoader {
         return first
     }
 
+    /// Semua file .gguf di Models/, urut nama, lengkap dengan ukuran.
+    /// Dipakai Model Manager Fase C. Metadata runtime (n_layer, dst.)
+    /// TIDAK diisi di sini — mengisi metadata butuh probe llama.cpp
+    /// (lihat `LlamaEngine`), dan daftar model harus tetap cepat.
+    public static func listModels() throws -> [ModelDescriptor] {
+        let dir = try modelsDirectory()
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey]
+        )
+        return urls
+            .filter { $0.pathExtension.lowercased() == "gguf" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { url in
+                guard let size = try? fileSizeBytes(at: url) else { return nil }
+                return ModelDescriptor(fileURL: url, fileSizeBytes: size)
+            }
+    }
+
+    /// Hapus satu file model dari Models/. Pemanggil wajib meng-unload
+    /// model dari engine dulu kalau file yang dihapus sedang ter-load
+    /// (lihat `ChatViewModel.unloadModel`), supaya engine tidak memegang
+    /// file yang sudah tidak ada.
+    public static func deleteModel(named fileName: String) throws {
+        let dir = try modelsDirectory()
+        let url = dir.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    /// Tandai satu file supaya tidak ikut backup iCloud. Dipakai setelah
+    /// download selesai dipindahkan ke Models/.
+    public static func excludeFromBackup(_ url: URL) throws {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableURL = url
+        try mutableURL.setResourceValues(values)
+    }
+
     public static func fileSizeBytes(at url: URL) throws -> Int64 {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         guard let size = values.fileSize, size > 0 else {
