@@ -1,15 +1,20 @@
 import SwiftUI
 
-/// Settings Fase C.
+/// Settings Fase C/D + Fase 2.
 ///
 /// Isi: model yang sedang ter-load + Model Manager, system prompt,
-/// parameter sampling per-model, dan pilihan template chat.
+/// parameter sampling per-model, pilihan template chat, tampilan
+/// (Fase 2: skema warna + haptik), dan tools agent (Fase 2 + Agent:
+/// aktif/nonaktif per tool, langsung tersimpan saat diubah).
 /// Semua perubahan parameter disimpan per-model (`ModelSettingsStore`)
 /// saat Terapkan ditekan; perubahan n_ctx memicu load ulang model
 /// (lihat `ChatViewModel.applyParameters`).
 public struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: ChatViewModel
+
+    @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
+    @State private var hapticsEnabled = true
 
     @State private var showingModelManager = false
     @State private var showingPromptEditor = false
@@ -52,6 +57,40 @@ public struct SettingsView: View {
                     Button("Ubah System Prompt…") {
                         showingPromptEditor = true
                     }
+                }
+
+                Section("Tampilan") {
+                    Picker("Skema warna", selection: $colorSchemeChoice) {
+                        ForEach(AppearanceChoice.allCases, id: \.rawValue) { choice in
+                            Text(choice.displayName).tag(choice.rawValue)
+                        }
+                    }
+                    Toggle("Haptik", isOn: $hapticsEnabled)
+                        .onChange(of: hapticsEnabled) { _, newValue in
+                            Haptics.setEnabled(newValue)
+                        }
+                }
+
+                Section("Agent & Tools") {
+                    Text("Tools hanya yang bisa dilakukan app iOS biasa. App tidak bisa membaca isi aplikasi lain dan tidak bisa mengubah pengaturan sistem. Tool tulis selalu minta konfirmasi sebelum dijalankan.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    ForEach(AgentTool.allCases) { tool in
+                        Toggle(isOn: Binding(
+                            get: { ToolPreferences.isEnabled(tool) },
+                            set: { ToolPreferences.setEnabled(tool, $0) }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(tool.displayName)
+                                Text(tool.description)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("Tool yang nonaktif tidak ditawarkan ke model. Tool baca yang butuh izin (Kalender, Kontak) meminta izin iOS saat pertama dipakai.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Parameter Sampling") {
@@ -159,6 +198,7 @@ public struct SettingsView: View {
         maxTokens = Int(params.maxTokens)
         nCtx = params.nCtx
         templateKind = viewModel.templateKind
+        hapticsEnabled = Haptics.isEnabled
     }
 
     private func apply() {
