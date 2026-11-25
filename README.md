@@ -250,6 +250,10 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
   (`org.ggml.gguf`, conform `public.data`) supaya Files menawarkan
   "Buka di LlamaChat" dan picker tidak menonaktifkan file .gguf;
   import memvalidasi magic GGUF dan menghapus salinan yang bukan GGUF.
+  Perbaikan lanjutan di hari yang sama: picker memakai HANYA `.data`
+  karena pencocokan UTI kustom .gguf di picker tidak bisa diandalkan;
+  Settings menampilkan status dukungan .gguf dari Info.plist build
+  yang terpasang untuk diagnosis.
 - **Fase D:** Persistensi SwiftData + fitur Fase 2 (multi-conversation,
   regenerate/edit/copy, token counter + context bar, dark mode, haptics,
   Markdown ringan).
