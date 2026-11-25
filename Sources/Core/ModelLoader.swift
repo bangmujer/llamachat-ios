@@ -17,7 +17,7 @@ public enum ModelLoader {
         ).first else {
             throw AppError.modelNotFound("Folder Application Support tidak ditemukan.")
         }
-        let dir = base.appendingPathComponent("Models", isDirectory: true)
+        var dir = base.appendingPathComponent("Models", isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
