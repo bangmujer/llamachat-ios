@@ -114,7 +114,10 @@ public struct ModelManagerView: View {
             }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [UTType.gguf, .data],
+                // Sama seperti ChatView: hanya .data. Filter UTI kustom
+                // .gguf tidak bisa diandalkan di picker; validasi magic
+                // GGUF di import adalah gerbang sebenarnya.
+                allowedContentTypes: [.data],
                 allowsMultipleSelection: false
             ) { result in
                 viewModel.importPickedModel(result: result)
