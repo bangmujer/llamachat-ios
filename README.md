@@ -138,8 +138,10 @@ total  = ukuran file GGUF + KV + overhead 300 MB
 
 Lalu menolak load (`AppError.outOfMemory`, pesan Bahasa Indonesia)
 kalau `total > memori tersedia (os_proc_available_memory())` ATAU
-`total > batas aman`: 2,6 GB di device <= 6 GB RAM, 3,5 GB di device
-8 GB. Angka-angka ini di-log di konsol saat load supaya bisa diaudit.
+`total > batas aman`: 3,8 GB di device <= 6 GB RAM (dilonggarkan atas
+persetujuan pengguna 2026-11-25 untuk Qwen3-4B Q4_K_M; sebelumnya
+2,6 GB), 3,5 GB di device 8 GB. Angka-angka ini di-log di konsol
+saat load supaya bisa diaudit.
 
 Contoh ilustratif (bukan hardcode; angka nyata dibaca dari model):
 n_layer=36, n_head_kv=2, head_dim=128 -> KV 2048 konteks = ~72 MB,
