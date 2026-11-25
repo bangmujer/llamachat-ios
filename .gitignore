@@ -1,0 +1,10 @@
+build/
+*.xcworkspace/
+LlamaChat.xcodeproj/
+DerivedData/
+*.ipa
+.DS_Store
+# xcframework dibangun di CI / Mac lokal, tidak di-commit (besar, regenerable).
+ThirdParty/
+# Model GGUF tidak pernah di-commit.
+*.gguf
