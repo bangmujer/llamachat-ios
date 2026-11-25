@@ -10,10 +10,16 @@ import llama
 /// - `.stats`: kecepatan berjalan, untuk indikator di UI (Fase B).
 /// - `.done`: generation berhenti normal / dibatalkan / konteks habis.
 ///   `.done(.cancelled)` BUKAN error: itu hasil tombol Stop.
+/// - `.usage`: jumlah token prompt + token yang dihasilkan + n_ctx
+///   untuk generation yang baru selesai (Fase 2: penghitung token /
+///   bar konteks). Di-emit tepat sebelum `.done` pada jalur selesai
+///   normal dan dibatalkan; TIDAK di-emit kalau generation gagal
+///   sebelum decode (mis. prompt melebihi n_ctx saat tokenisasi).
 /// - `.failed`: error yang harus ditampilkan ke pengguna.
 public enum GenerationEvent: Sendable {
     case token(String)
     case stats(tokPerSec: Double)
+    case usage(promptTokens: Int, generatedTokens: Int, nCtx: Int)
     case done(DoneReason)
     case failed(AppError)
 }
@@ -158,6 +164,7 @@ extension LlamaEngine {
             if Task.isCancelled {
                 let remainder = decoder.flush()
                 if !remainder.isEmpty { continuation.yield(.token(remainder)) }
+                continuation.yield(.usage(promptTokens: promptTokens.count, generatedTokens: generated, nCtx: nCtx))
                 continuation.yield(.done(.cancelled))
                 return
             }
@@ -190,7 +197,7 @@ extension LlamaEngine {
             if llama_vocab_is_eog(vocab, sampled) {
                 let remainder = decoder.flush()
                 if !remainder.isEmpty { continuation.yield(.token(remainder)) }
-                emitFinalStats(continuation: continuation, startedAt: startedAt, generated: generated, ctx: ctx)
+                emitFinalStats(continuation: continuation, startedAt: startedAt, generated: generated, promptTokens: promptTokens.count, ctx: ctx)
                 continuation.yield(.done(.endOfTurn))
                 return
             }
@@ -210,7 +217,7 @@ extension LlamaEngine {
 
         let remainder = decoder.flush()
         if !remainder.isEmpty { continuation.yield(.token(remainder)) }
-        emitFinalStats(continuation: continuation, startedAt: startedAt, generated: generated, ctx: ctx)
+        emitFinalStats(continuation: continuation, startedAt: startedAt, generated: generated, promptTokens: promptTokens.count, ctx: ctx)
         continuation.yield(.done(.maxTokens))
     }
 
@@ -218,9 +225,11 @@ extension LlamaEngine {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         startedAt: Date,
         generated: Int,
+        promptTokens: Int,
         ctx: OpaquePointer
     ) {
         let perf = llama_perf_context(ctx)
+        continuation.yield(.usage(promptTokens: promptTokens, generatedTokens: generated, nCtx: Int(llama_n_ctx(ctx))))
         if perf.n_eval > 0, perf.t_eval_ms > 0 {
             let tokPerSec = Double(perf.n_eval) / (perf.t_eval_ms / 1000.0)
             continuation.yield(.stats(tokPerSec: tokPerSec))
