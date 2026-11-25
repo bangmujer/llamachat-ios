@@ -37,6 +37,13 @@ targets:
         # http hanya ditambahkan nanti kalau ada kebutuhan yang terbukti.
         UIBackgroundModes:
           - fetch
+        # Izin agent Fase 2: teks yang ditampilkan iOS saat pertama
+        # kali tool meminta akses. Tanpa kunci ini, requestAccess
+        # langsung ditolak sistem. Hanya dipakai saat pengguna
+        # meminta lewat agent; tidak ada akses latar belakang.
+        NSCalendarsUsageDescription: "LlamaChat memakai kalender hanya saat kamu meminta lewat agent (mis. melihat jadwal atau membuat acara)."
+        NSRemindersUsageDescription: "LlamaChat membuat pengingat hanya saat kamu meminta lewat agent."
+        NSContactsUsageDescription: "LlamaChat mencari kontak hanya saat kamu meminta lewat agent."
         # Deklarasi tipe dokumen GGUF (2026-11-26): tanpa ini, iOS tidak
         # mengenal ekstensi .gguf — Files tidak menawarkan "Buka di
         # LlamaChat" dan document picker bisa menonaktifkan file .gguf.
