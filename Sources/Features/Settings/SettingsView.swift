@@ -93,6 +93,14 @@ public struct SettingsView: View {
                     }
                 }
 
+                Section("Tentang") {
+                    LabeledContent("Versi", value: appVersionText)
+                    LabeledContent("Dukungan .gguf", value: ggufSupportText)
+                    Text("Dukungan .gguf dibaca dari Info.plist build yang terpasang. Kalau tertulis tidak aktif, build yang terpasang masih build lama — install ulang IPA terbaru.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Button(isApplying ? "Menerapkan…" : "Terapkan") {
                         apply()
@@ -119,6 +127,27 @@ public struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    /// "Aktif" kalau build yang terpasang mendeklarasikan tipe dokumen
+    /// GGUF di Info.plist-nya. Dipakai untuk membedakan build lama vs
+    /// build baru saat mendiagnosis masalah import di device.
+    private var ggufSupportText: String {
+        guard let types = Bundle.main.object(forInfoDictionaryKey: "CFBundleDocumentTypes") as? [[String: Any]] else {
+            return "Tidak aktif"
+        }
+        let hasGGUF = types.contains { type in
+            let contentTypes = type["LSItemContentTypes"] as? [String] ?? []
+            let extensions = type["CFBundleTypeExtensions"] as? [String] ?? []
+            return contentTypes.contains("org.ggml.gguf") || extensions.contains("gguf")
+        }
+        return hasGGUF ? "Aktif" : "Tidak aktif"
     }
 
     private func loadDraft() {
