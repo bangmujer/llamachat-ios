@@ -20,6 +20,7 @@ import UIKit
 @main
 struct LlamaChatApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
 
     // Actor disimpan sebagai properti `let` di App. Semua method-nya
     // dipanggil dengan `await` dari Task UI, sehingga C API berjalan di
@@ -46,12 +47,22 @@ struct LlamaChatApp: App {
         }
     }()
 
+    /// Skema warna Fase 2 dari Settings (0 = mengikuti sistem).
+    private var preferredColorScheme: ColorScheme? {
+        switch AppearanceChoice(rawValue: colorSchemeChoice) ?? .system {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             NavigationStack {
                 ChatView(engine: engine, modelContext: container.mainContext)
             }
             .modelContainer(container)
+            .preferredColorScheme(preferredColorScheme)
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: UIApplication.didReceiveMemoryWarningNotification
