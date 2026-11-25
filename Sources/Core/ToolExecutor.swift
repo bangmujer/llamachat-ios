@@ -103,7 +103,7 @@ public final class ToolExecutor {
         let lines = events.map { event in
             let when = formatter.string(from: event.startDate)
             let calendar = event.calendar?.title ?? "Kalender"
-            return "- \(when): \(event.title) (\(calendar))"
+            return "- \(when): \(event.title ?? "(tanpa judul)") (\(calendar))"
         }
         return truncate("Acara kalender \(days) hari ke depan:\n" + lines.joined(separator: "\n"))
     }
