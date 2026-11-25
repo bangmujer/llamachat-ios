@@ -19,8 +19,8 @@ public struct ModelDescriptor: Identifiable, Equatable, Sendable {
     public var nHeadKV: Int32?
     public var nCtxTrain: Int32?
     /// Template chat mentah dari metadata GGUF, kalau ada.
-    /// String Jinja; dirender oleh llama.cpp lewat `llama_chat_apply_template`
-    /// di Fase C, bukan di-parse manual di sini.
+    /// String Jinja; dipakai HANYA untuk auto-detect keluarga template
+    /// (lihat `ChatTemplate.detect`), bukan di-parse sebagai Jinja.
     public var chatTemplate: String?
 
     public init(fileURL: URL, fileSizeBytes: Int64) {
