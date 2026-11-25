@@ -1,14 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// Entry point Fase A.
+/// Entry point Fase B.
 ///
-/// - Tidak ada UI chat di fase ini; `PhaseAView` adalah harness sementara
-///   yang menampilkan log load + generation supaya build yang di-install
-///   lewat TrollStore tetap bisa diverifikasi tanpa konsol Xcode.
-/// - SwiftData BELUM dipakai di fase ini; container SwiftData datang
-///   di Fase D bersama persistensi percakapan.
-/// - Tidak ada network call di app ini.
+/// - UI utama adalah `ChatView` (satu percakapan di memori).
+/// - SwiftData BELUM dipakai; container SwiftData datang di Fase D
+///   bersama persistensi percakapan.
+/// - Tidak ada network call di app ini (download model datang di Fase C).
 @main
 struct LlamaChatApp: App {
     // Actor disimpan sebagai properti `let` di App. Semua method-nya
@@ -18,16 +16,18 @@ struct LlamaChatApp: App {
 
     var body: some Scene {
         WindowGroup {
-            PhaseAView(engine: engine)
-                .onReceive(
-                    NotificationCenter.default.publisher(
-                        for: UIApplication.didReceiveMemoryWarningNotification
-                    )
-                ) { _ in
-                    Task {
-                        await engine.handleMemoryWarning()
-                    }
+            NavigationStack {
+                ChatView(engine: engine)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.didReceiveMemoryWarningNotification
+                )
+            ) { _ in
+                Task {
+                    await engine.handleMemoryWarning()
                 }
+            }
         }
     }
 }
