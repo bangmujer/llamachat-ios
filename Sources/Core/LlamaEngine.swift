@@ -333,7 +333,15 @@ public actor LlamaEngine {
         let physical = ProcessInfo.processInfo.physicalMemory
         let safeLimit: Int64
         if physical <= 6 * 1024 * 1024 * 1024 {
-            safeLimit = 2_600_000_000
+            // Dilonggarkan atas persetujuan pengguna (23:26 WIT,
+            // 2026-11-25) untuk Qwen3-4B Q4_K_M: file 2.497 GB, estimasi
+            // ~3.1 GB di n_ctx 2048 dan ~3.4 GB di n_ctx 4096. Batas
+            // 2.6 GB lama akan selalu menolak model ini. Cek memori
+            // tersedia (`os_proc_available_memory`) TETAP berlaku sebagai
+            // penolakan kedua, dan tidak ada janji bebas jetsam: kalau
+            // RAM mepet saat load, iOS tetap bisa mematikan app. Tes di
+            // device yang membuktikan, bukan angka ini.
+            safeLimit = 3_800_000_000
         } else if physical <= 8 * 1024 * 1024 * 1024 {
             safeLimit = 3_500_000_000
         } else {
