@@ -3,11 +3,11 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase C.** Settings (parameter sampling per-model, template
-picker, system prompt) + Model Manager (daftar, hapus, impor Files,
-download background URLSession dari URL pengguna) di atas ChatView
-Fase B. Persistensi SwiftData (Fase D) belum ada. Lihat bagian
-"Peta fase" di bawah.
+**Status: Fase D.** Persistensi SwiftData + multi-conversation (daftar
+percakapan, pulihkan percakapan terakhir saat app dibuka, hapus
+percakapan) di atas Fase A–C. Fitur Fase 2 (regenerate/edit/copy, token
+counter + context bar, dark mode, haptics, Markdown ringan) belum ada.
+Lihat bagian "Peta fase" di bawah.
 
 ## Pin llama.cpp — baca ini dulu
 
@@ -254,8 +254,11 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
   karena pencocokan UTI kustom .gguf di picker tidak bisa diandalkan;
   Settings menampilkan status dukungan .gguf dari Info.plist build
   yang terpasang untuk diagnosis.
-- **Fase D:** Persistensi SwiftData + fitur Fase 2 (multi-conversation,
-  regenerate/edit/copy, token counter + context bar, dark mode, haptics,
-  Markdown ringan).
+- **Fase D:** Persistensi SwiftData + multi-conversation (model
+  `Conversation`/`StoredMessage`, daftar percakapan di sheet ChatView,
+  restore percakapan terakhir, hapus percakapan; simpan pada titik
+  diskrit, bukan per flush token). Fitur Fase 2 (regenerate/edit/copy,
+  token counter + context bar, dark mode, haptics, Markdown ringan)
+  belum ada.
 
 Setiap fase berhenti untuk review sebelum fase berikutnya dimulai.
