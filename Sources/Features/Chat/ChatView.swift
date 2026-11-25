@@ -1,8 +1,11 @@
+import SwiftData
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import UIKit
 
-/// Chat UI Fase B: satu percakapan di memori.
+/// Chat UI Fase B/D: satu percakapan di layar, riwayat tersimpan di
+/// SwiftData dan bisa dibuka lewat daftar percakapan (sheet).
 ///
 /// - `ScrollView` + `LazyVStack` (bukan `List`, sesuai brief) dengan
 ///   auto-scroll ke pesan terbaru.
@@ -13,8 +16,10 @@ import UniformTypeIdentifiers
 /// - System prompt bisa diubah dari sheet toolbar; perubahan langsung
 ///   berlaku untuk jawaban berikutnya (disimpan di UserDefaults oleh
 ///   ViewModel).
-/// - Persistensi percakapan (SwiftData, multi-conversation) datang di
-///   Fase D; di sini hanya ada satu percakapan dan tombol Percakapan Baru.
+/// - Persistensi percakapan (SwiftData, multi-conversation) aktif mulai
+///   Fase D: percakapan terakhir yang diubah dipulihkan saat app dibuka,
+///   tombol daftar percakapan membuka sheet pilih/hapus, dan tombol
+///   Percakapan Baru memulai percakapan kosong baru.
 struct ChatView: View {
     let engine: LlamaEngine
 
@@ -22,10 +27,11 @@ struct ChatView: View {
     @State private var draftText = ""
     @State private var showingPicker = false
     @State private var showingSettings = false
+    @State private var showingConversations = false
 
-    init(engine: LlamaEngine) {
+    init(engine: LlamaEngine, modelContext: ModelContext) {
         self.engine = engine
-        _viewModel = StateObject(wrappedValue: ChatViewModel(engine: engine))
+        _viewModel = StateObject(wrappedValue: ChatViewModel(engine: engine, modelContext: modelContext))
     }
 
     var body: some View {
@@ -94,6 +100,14 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
+                    showingConversations = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .accessibilityLabel("Daftar percakapan")
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
                     viewModel.startNewChat()
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -133,7 +147,11 @@ struct ChatView: View {
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)
         }
+        .sheet(isPresented: $showingConversations) {
+            ConversationListView(viewModel: viewModel)
+        }
         .task {
+            viewModel.restoreLatestConversationIfNeeded()
             await viewModel.loadModelIfNeeded()
         }
     }
