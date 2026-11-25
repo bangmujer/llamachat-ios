@@ -3,10 +3,11 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase B.** Chat UI (satu percakapan di memori) + streaming +
-Stop + system prompt (UserDefaults). Harness Fase A sudah diganti
-`ChatView`. Settings / Model Manager (Fase C) dan persistensi SwiftData
-(Fase D) belum ada. Lihat bagian "Peta fase" di bawah.
+**Status: Fase C.** Settings (parameter sampling per-model, template
+picker, system prompt) + Model Manager (daftar, hapus, impor Files,
+download background URLSession dari URL pengguna) di atas ChatView
+Fase B. Persistensi SwiftData (Fase D) belum ada. Lihat bagian
+"Peta fase" di bawah.
 
 ## Pin llama.cpp — baca ini dulu
 
@@ -174,12 +175,15 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
 6. **Context overflow = berhenti dengan pesan, bukan truncate diam-diam.**
    Prompt yang melebihi `n_ctx` ditolak sebelum decode; decode yang
    kehabisan slot KV (`llama_decode` mengembalikan 1) mengakhiri stream
-   dengan `.done(.contextOverflow)`. Context shift belum ada di Fase A.
+   dengan `.done(.contextOverflow)`. Context shift belum ada.
 7. **Cancellation bukan error.** Stop menghasilkan `.done(.cancelled)`,
    bukan `.failed`. `AppError.cancelled` hanya untuk pembatalan saat load.
-8. **Template bawaan model diutamakan di Fase C.** `ChatTemplate.swift`
-   di Fase A hanya fallback manual. Jangan mem-parse template Jinja
-   di Swift.
+8. **Template tidak di-parse sebagai Jinja di Swift (keputusan Fase C).**
+   `llama_chat_apply_template` di v1.0.0 "does not use a jinja parser"
+   dan hanya mendukung template bawaan tertentu, jadi `.auto` mendeteksi
+   keluarga template dari penanda khas di template metadata model
+   (`ChatTemplate.detect`) lalu render dengan string builder Swift.
+   Pengguna bisa meng-override per-model di Settings.
 
 ## Langkah manual yang harus dilakukan sendiri
 
@@ -233,9 +237,13 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
   system prompt (UserDefaults, berlaku untuk jawaban berikutnya).
   Multi-turn = render ulang seluruh riwayat tiap giliran, karena engine
   mengosongkan KV cache setiap generation selesai.
-- **Fase B:** ChatView + streaming + stop + system prompt (UserDefaults).
-- **Fase C:** Settings, template picker, Model Manager (background
-  download, import Files, hapus, ukuran).
+- **Fase B (ini):** ChatView + streaming (throttle ~20 fps) + stop +
+  system prompt (UserDefaults).
+- **Fase C (ini):** Settings (parameter sampling per-model tersimpan di
+  UserDefaults, template picker dengan auto-detect dari metadata model,
+  system prompt), Model Manager (daftar + ukuran, hapus, impor Files,
+  download background URLSession dengan progress/resume/verifikasi
+  ukuran — hanya dari URL yang dimasukkan pengguna, HTTPS saja).
 - **Fase D:** Persistensi SwiftData + fitur Fase 2 (multi-conversation,
   regenerate/edit/copy, token counter + context bar, dark mode, haptics,
   Markdown ringan).
