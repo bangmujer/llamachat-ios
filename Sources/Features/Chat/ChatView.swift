@@ -102,7 +102,14 @@ struct ChatView: View {
         }
         .fileImporter(
             isPresented: $showingPicker,
-            allowedContentTypes: [UTType.gguf, .data],
+            // HANYA .data (public.data), sengaja tanpa tipe .gguf kustom:
+            // pencocokan UTI untuk ekstensi tak dikenal (.gguf) tidak
+            // bisa diandalkan — file bisa tetap nonaktif di picker kalau
+            // UTI dinamis yang dihitung picker tidak cocok dengan tipe
+            // yang dideklarasikan app. Dengan .data semua file bisa
+            // dipilih; gerbang sebenarnya adalah validasi magic GGUF
+            // di `importPickedModel`, bukan filter picker.
+            allowedContentTypes: [.data],
             allowsMultipleSelection: false
         ) { result in
             viewModel.importPickedModel(result: result)
