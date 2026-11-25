@@ -102,7 +102,7 @@ public final class ToolExecutor {
         formatter.timeStyle = .short
         let lines = events.map { event in
             let when = formatter.string(from: event.startDate)
-            let calendar = event.calendar.title
+            let calendar = event.calendar?.title ?? "Kalender"
             return "- \(when): \(event.title) (\(calendar))"
         }
         return truncate("Acara kalender \(days) hari ke depan:\n" + lines.joined(separator: "\n"))
@@ -131,7 +131,7 @@ public final class ToolExecutor {
             formatter.locale = Locale(identifier: "id_ID")
             formatter.dateStyle = .medium
             formatter.timeStyle = .short
-            return "Acara '\(title)' berhasil dibuat pada \(formatter.string(from: start)) di kalender \(event.calendar.title)."
+            return "Acara '\(title)' berhasil dibuat pada \(formatter.string(from: start)) di kalender \(event.calendar?.title ?? "kalender")."
         } catch {
             return "Gagal menyimpan acara kalender: \(error.localizedDescription)"
         }
@@ -164,7 +164,7 @@ public final class ToolExecutor {
         let status = EKEventStore.authorizationStatus(for: .event)
         switch status {
         case .fullAccess: return true
-        case .notDetermined: return await eventStore.requestFullAccessToEvents()
+        case .notDetermined: return (try? await eventStore.requestFullAccessToEvents()) ?? false
         default: return false
         }
     }
@@ -173,7 +173,7 @@ public final class ToolExecutor {
         let status = EKEventStore.authorizationStatus(for: .reminder)
         switch status {
         case .fullAccess: return true
-        case .notDetermined: return await eventStore.requestFullAccessToReminders()
+        case .notDetermined: return (try? await eventStore.requestFullAccessToReminders()) ?? false
         default: return false
         }
     }
