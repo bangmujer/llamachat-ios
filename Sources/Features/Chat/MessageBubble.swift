@@ -20,6 +20,9 @@ import SwiftUI
 struct MessageBubble: View {
     let message: ChatMessage
     var isStreaming: Bool = false
+    /// Lipat/buka pesan panjang (tombol "Lihat selengkapnya").
+    /// Per bubble, keyed oleh identitas view dari `ForEach` + `.id`.
+    @State private var expanded = false
 
     var body: some View {
         HStack {
@@ -34,6 +37,15 @@ struct MessageBubble: View {
 
                 if message.role == .assistant {
                     assistantContent
+                } else if message.content.count > Self.collapseThreshold {
+                    // Pesan pengguna yang panjang: lipat dengan tombol
+                    // "Lihat selengkapnya" / "Tutup selengkapnya".
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(expanded ? message.content : Self.collapsed(message.content))
+                            .font(.body)
+                            .textSelection(.enabled)
+                        expandButton
+                    }
                 } else {
                     Text(message.content)
                         .font(.body)
@@ -79,7 +91,20 @@ struct MessageBubble: View {
                 }
             }
             if showAnswer {
-                MarkdownContentView(text: parts.answer, isStreaming: isStreaming)
+                // Pesan panjang dilipat saat tidak streaming; tombol di
+                // bawah untuk membuka/menutup selengkapnya. Saat
+                // streaming selalu tampil penuh supaya teks yang
+                // mengalir tidak melompat-lompat.
+                let needsCollapse = !isStreaming && parts.answer.count > Self.collapseThreshold
+                VStack(alignment: .leading, spacing: 4) {
+                    MarkdownContentView(
+                        text: needsCollapse && !expanded ? Self.collapsed(parts.answer) : parts.answer,
+                        isStreaming: isStreaming
+                    )
+                    if needsCollapse {
+                        expandButton
+                    }
+                }
             } else if isStreaming {
                 // Masih di dalam blok think dan jawaban belum mulai:
                 // jangan tampilkan bubble kosong, label "Berpikir…"
@@ -87,5 +112,38 @@ struct MessageBubble: View {
                 EmptyView()
             }
         }
+    }
+
+    // MARK: - Lipat pesan panjang
+
+    /// Ambang lipat: pesan di atas ini dilipat dan butuh ketukan
+    /// "Lihat selengkapnya" untuk membaca sisanya.
+    private static let collapseThreshold = 600
+
+    private var expandButton: some View {
+        Button(expanded ? "Tutup selengkapnya" : "Lihat selengkapnya") {
+            expanded.toggle()
+            Haptics.light()
+        }
+        .font(.footnote)
+    }
+
+    /// Potong teks ke ambang lipat di batas kata/baris terdekat, tambah
+    /// "…", dan tutup fence kode yang terpotong supaya parser Markdown
+    /// tidak menganggap sisanya sebagai kode.
+    private static func collapsed(_ text: String) -> String {
+        let limit = collapseThreshold
+        guard text.count > limit else { return text }
+        var end = text.index(text.startIndex, offsetBy: limit)
+        let prefix = text[..<end]
+        if let lastBreak = prefix.lastIndex(where: { $0 == "\n" || $0 == " " }),
+           prefix.distance(from: prefix.startIndex, to: lastBreak) > limit - 120 {
+            end = lastBreak
+        }
+        var result = String(text[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        if result.components(separatedBy: "```").count % 2 == 0 {
+            result += "\n```"
+        }
+        return result
     }
 }
