@@ -1,12 +1,21 @@
 import Foundation
+import SwiftData
 import SwiftUI
 
-/// ViewModel chat Fase B.
+/// ViewModel chat Fase B/D.
 ///
 /// Tanggung jawabnya hanya tiga: memegang riwayat pesan di memori,
 /// menjalankan load + generation lewat `LlamaEngine`, dan menerjemahkan
 /// event stream menjadi state UI. Tidak ada pointer C di sini; tidak ada
-/// network call; tidak ada persistensi (Fase D).
+/// network call.
+///
+/// Fase D menambahkan persistensi: riwayat juga disimpan ke SwiftData
+/// (`Conversation` / `StoredMessage`) lewat `modelContext` yang
+/// disuntikkan dari App. `messages` di memori tetap menjadi sumber
+/// kebenaran selama chat berjalan; penyimpanan terjadi pada
+/// titik-titik diskrit (pesan pengguna terkirim, generation selesai /
+/// dibatalkan, ganti percakapan) — BUKAN per flush token (20 fps),
+/// supaya write database tidak membebani streaming.
 ///
 /// Multi-turn: `LlamaEngine` mengosongkan KV cache setiap generation
 /// selesai (desain Fase A), jadi setiap giliran me-render SELURUH
@@ -24,6 +33,15 @@ public final class ChatViewModel: ObservableObject {
         "Kamu adalah asisten AI yang membantu dan menjawab dalam Bahasa Indonesia dengan singkat dan jelas."
 
     private let engine: LlamaEngine
+    /// Context SwiftData (mainContext dari App). Semua akses entity
+    /// terjadi di MainActor, sesuai konteks ini.
+    private let modelContext: ModelContext
+
+    /// ID percakapan yang sedang dibuka di database, kalau percakapan
+    /// ini sudah pernah disimpan. Nil = percakapan baru yang belum
+    /// pernah disimpan (disimpan saat pesan pertama terkirim).
+    public private(set) var currentConversationID: UUID?
+    private var hasRestoredLatest = false
 
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var conversationTitle = "Percakapan baru"
@@ -56,8 +74,9 @@ public final class ChatViewModel: ObservableObject {
     private var generationTask: Task<Void, Never>?
     private var hasAttemptedLoad = false
 
-    public init(engine: LlamaEngine) {
+    public init(engine: LlamaEngine, modelContext: ModelContext) {
         self.engine = engine
+        self.modelContext = modelContext
         self.parameters = SamplingParameters.defaultForCurrentDevice()
         let saved = UserDefaults.standard.string(forKey: Self.systemPromptDefaultsKey)
         if let saved, !saved.isEmpty {
@@ -212,6 +231,9 @@ public final class ChatViewModel: ObservableObject {
             conversationTitle = String(text.prefix(40))
         }
         scrollVersion += 1
+        // Pesan pengguna langsung disimpan, supaya tidak hilang kalau
+        // app ditutup di tengah generation.
+        persistCurrentConversation()
 
         generationTask = Task {
             defer {
@@ -300,6 +322,10 @@ public final class ChatViewModel: ObservableObject {
                 removeMessageIfEmpty(assistantId)
                 statusText = "Dibatalkan."
             }
+
+            // Generation selesai / gagal / dibatalkan: simpan state
+            // akhir percakapan, termasuk jawaban parsial kalau ada.
+            persistCurrentConversation()
         }
     }
 
@@ -314,16 +340,134 @@ public final class ChatViewModel: ObservableObject {
 
     public func startNewChat() {
         stop()
-        messages = []
-        conversationTitle = "Percakapan baru"
+        // Simpan dulu percakapan yang ditinggalkan, baru lupakan.
+        persistCurrentConversation()
+        forgetCurrentConversation()
         tokPerSec = nil
         errorMessage = nil
         statusText = isModelLoaded ? "Model siap." : "Belum ada model."
         scrollVersion += 1
     }
 
+    /// Lupakan percakapan yang sedang dibuka TANPA menyimpannya.
+    /// Dipakai setelah percakapan dihapus dari daftar (tidak ada lagi
+    /// yang bisa disimpan) dan oleh `startNewChat` setelah penyimpanan
+    /// eksplisit. Model yang ter-load TIDAK di-unload: ganti percakapan
+    /// tidak berarti ganti model.
+    public func forgetCurrentConversation() {
+        currentConversationID = nil
+        messages = []
+        conversationTitle = "Percakapan baru"
+    }
+
     public func dismissError() {
         errorMessage = nil
+    }
+
+    // MARK: - Persistensi & multi-conversation (Fase D)
+
+    /// Pulihkan percakapan yang terakhir diubah saat app baru dibuka.
+    /// Sekali saja per masa hidup ViewModel, dan hanya kalau belum ada
+    /// pesan di memori (mis. setelah restore, pengguna bebas pindah ke
+    /// percakapan lain tanpa takut tertimpa restore ini).
+    public func restoreLatestConversationIfNeeded() {
+        guard !hasRestoredLatest else { return }
+        hasRestoredLatest = true
+        guard messages.isEmpty else { return }
+        let descriptor = FetchDescriptor<Conversation>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        guard let latest = try? modelContext.fetch(descriptor).first else { return }
+        currentConversationID = latest.id
+        messages = latest.orderedMessages.map(\.chatMessage)
+        conversationTitle = latest.title
+        scrollVersion += 1
+    }
+
+    /// Buka percakapan tersimpan. Percakapan yang sedang dibuka disimpan
+    /// dulu (kecuali yang dibuka adalah percakapan itu sendiri). Model
+    /// yang ter-load tidak di-unload; generation yang sedang berjalan
+    /// dihentikan dulu supaya jawabannya tidak mendarat di percakapan
+    /// yang salah.
+    public func loadConversation(_ conversation: Conversation) {
+        stop()
+        if conversation.id != currentConversationID {
+            persistCurrentConversation()
+        }
+        currentConversationID = conversation.id
+        messages = conversation.orderedMessages.map(\.chatMessage)
+        conversationTitle = conversation.title
+        tokPerSec = nil
+        errorMessage = nil
+        statusText = isModelLoaded ? "Model siap." : "Belum ada model."
+        scrollVersion += 1
+    }
+
+    /// Judul yang disimpan: 40 karakter pertama pesan pengguna pertama,
+    /// sama seperti judul di navigation bar. Tanpa pesan pengguna,
+    /// judul default yang dipakai.
+    private func titleForPersistence() -> String {
+        if let firstUser = messages.first(where: { $0.role == .user }) {
+            return String(firstUser.content.prefix(40))
+        }
+        return "Percakapan baru"
+    }
+
+    /// Simpan state `messages` saat ini ke SwiftData (upsert berdasarkan
+    /// ID pesan). Tidak melakukan apa-apa untuk percakapan kosong.
+    /// Kegagalan save diabaikan secara sengaja (`try?`): chat di memori
+    /// tetap jalan; kehilangan riwayat tersimpan lebih baik daripada
+    /// crash atau banner error di tengah percakapan.
+    private func persistCurrentConversation() {
+        guard !messages.isEmpty else { return }
+        conversationTitle = titleForPersistence()
+        let now = Date()
+
+        let conversation: Conversation
+        if let wantedID = currentConversationID {
+            let all = (try? modelContext.fetch(FetchDescriptor<Conversation>())) ?? []
+            if let existing = all.first(where: { $0.id == wantedID }) {
+                conversation = existing
+            } else {
+                conversation = Conversation(id: wantedID, title: conversationTitle, createdAt: now, updatedAt: now)
+                modelContext.insert(conversation)
+            }
+        } else {
+            conversation = Conversation(title: conversationTitle, createdAt: now, updatedAt: now)
+            currentConversationID = conversation.id
+            modelContext.insert(conversation)
+        }
+        conversation.title = conversationTitle
+        conversation.updatedAt = now
+
+        var byID: [UUID: StoredMessage] = [:]
+        for stored in conversation.messages {
+            byID[stored.id] = stored
+        }
+        var synced: [StoredMessage] = []
+        for (index, message) in messages.enumerated() {
+            if let stored = byID[message.id] {
+                stored.content = message.content
+                stored.roleRaw = message.role.rawValue
+                stored.sortIndex = index
+                synced.append(stored)
+            } else {
+                let stored = StoredMessage(
+                    id: message.id,
+                    role: message.role,
+                    content: message.content,
+                    sortIndex: index,
+                    conversation: conversation
+                )
+                modelContext.insert(stored)
+                synced.append(stored)
+            }
+        }
+        for stored in conversation.messages where !messages.contains(where: { $0.id == stored.id }) {
+            modelContext.delete(stored)
+        }
+        conversation.messages = synced
+        try? modelContext.save()
     }
 
     // MARK: - Bantuan internal
