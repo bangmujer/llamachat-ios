@@ -18,7 +18,7 @@ public struct SettingsView: View {
     @State private var topP: Double = 0.9
     @State private var topK: Int = 40
     @State private var repeatPenalty: Double = 1.1
-    @State private var maxTokens: Int = 256
+    @State private var maxTokens: Int = 1024
     @State private var nCtx: Int = 2048
     @State private var templateKind: ChatTemplateKind = .auto
     @State private var isApplying = false
@@ -68,7 +68,7 @@ public struct SettingsView: View {
                         Text("Repeat penalty: \(repeatPenalty, specifier: "%.2f")")
                         Slider(value: $repeatPenalty, in: 1...2, step: 0.05)
                     }
-                    Stepper("Max tokens: \(maxTokens)", value: $maxTokens, in: 64...1024, step: 64)
+                    Stepper("Max tokens: \(maxTokens)", value: $maxTokens, in: 64...2048, step: 64)
                     Picker("Konteks (n_ctx)", selection: $nCtx) {
                         ForEach(nCtxOptions, id: \.self) { value in
                             Text("\(value)").tag(value)
