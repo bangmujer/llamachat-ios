@@ -3,9 +3,10 @@ import UniformTypeIdentifiers
 
 /// Editor system prompt mandiri, dipakai dari Settings dan (nanti)
 /// dari sheet cepat. Simpan hanya lewat tombol Simpan; Batal tidak
-/// mengubah apa pun. Teks kosong ditolak — system prompt kosong
-/// berarti generation tanpa instruksi system sama sekali, dan itu
-/// harus keputusan eksplisit, bukan kecelakaan ketik.
+/// mengubah apa pun. Teks kosong DIIZINKAN: system prompt kosong
+/// berarti generation tanpa instruksi system sama sekali (template
+/// chat tidak merender pesan system) — itu keputusan eksplisit
+/// pengguna, dan app tidak menambahkan instruksi apa pun di belakangnya.
 public struct PromptEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -32,10 +33,9 @@ public struct PromptEditorView: View {
                             onSave(draft)
                             dismiss()
                         }
-                        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-            Text("Berlaku untuk balasan berikutnya. Tidak perlu load ulang model.")
+            Text("Berlaku untuk balasan berikutnya. Tidak perlu load ulang model. Kosongkan untuk generation tanpa instruksi system sama sekali.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
