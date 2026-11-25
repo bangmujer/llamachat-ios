@@ -114,7 +114,7 @@ public struct ModelManagerView: View {
             }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data],
+                allowedContentTypes: [UTType.gguf, .data],
                 allowsMultipleSelection: false
             ) { result in
                 viewModel.importPickedModel(result: result)
