@@ -29,8 +29,15 @@ import SwiftUI
 @MainActor
 public final class ChatViewModel: ObservableObject {
     private static let systemPromptDefaultsKey = "llamachat.systemPrompt"
+    /// Default minimal dan netral: hanya bahasa jawaban. TIDAK ada
+    /// arahan isi, gaya, atau batasan apa pun di sini — app tidak
+    /// menyaring atau mengarahkan jawaban model. Pengguna bebas
+    /// menulis system prompt apa pun (termasuk mengosongkannya) lewat
+    /// editor di Settings; isi prompt sepenuhnya tanggung jawab
+    /// pengguna. Penolakan yang berasal dari bobot model itu sendiri
+    /// tidak bisa dihapus dari sisi app.
     private static let defaultSystemPrompt =
-        "Kamu adalah asisten AI yang membantu dan menjawab dalam Bahasa Indonesia dengan singkat dan jelas."
+        "Kamu adalah asisten AI. Jawablah dalam Bahasa Indonesia."
 
     private let engine: LlamaEngine
     /// Context SwiftData (mainContext dari App). Semua akses entity
