@@ -31,7 +31,7 @@ struct LlamaChatApp: App {
         do {
             return try ModelContainer(
                 for: schema,
-                configurations: [ModelConfiguration(schema: schema, isStored: true)]
+                configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)]
             )
         } catch {
             // Fallback in-memory: app tetap bisa dipakai, riwayat tidak
@@ -41,7 +41,7 @@ struct LlamaChatApp: App {
             // kehilangan data.
             return try! ModelContainer( // swiftlint:disable:this force_try
                 for: schema,
-                configurations: [ModelConfiguration(schema: schema, isStored: false)]
+                configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
             )
         }
     }()
