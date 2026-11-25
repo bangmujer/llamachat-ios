@@ -37,6 +37,29 @@ targets:
         # http hanya ditambahkan nanti kalau ada kebutuhan yang terbukti.
         UIBackgroundModes:
           - fetch
+        # Deklarasi tipe dokumen GGUF (2026-11-26): tanpa ini, iOS tidak
+        # mengenal ekstensi .gguf — Files tidak menawarkan "Buka di
+        # LlamaChat" dan document picker bisa menonaktifkan file .gguf.
+        # Identifier org.ggml.gguf mengikuti konvensi ggml; tipe ini
+        # conform ke public.data supaya picker + share sheet mengenalinya.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.ggml.gguf
+            UTTypeDescription: "GGUF Model"
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gguf
+              public.mime-type:
+                - application/octet-stream
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: "GGUF Model"
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Default
+            LSItemContentTypes:
+              - org.ggml.gguf
+            CFBundleTypeExtensions:
+              - gguf
     settings:
       base:
         PRODUCT_NAME: "LlamaChat"
