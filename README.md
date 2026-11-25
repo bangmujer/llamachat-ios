@@ -246,6 +246,10 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
   system prompt), Model Manager (daftar + ukuran, hapus, impor Files,
   download background URLSession dengan progress/resume/verifikasi
   ukuran — hanya dari URL yang dimasukkan pengguna, HTTPS saja).
+  Perbaikan 2026-11-26: tipe dokumen GGUF dideklarasikan di Info.plist
+  (`org.ggml.gguf`, conform `public.data`) supaya Files menawarkan
+  "Buka di LlamaChat" dan picker tidak menonaktifkan file .gguf;
+  import memvalidasi magic GGUF dan menghapus salinan yang bukan GGUF.
 - **Fase D:** Persistensi SwiftData + fitur Fase 2 (multi-conversation,
   regenerate/edit/copy, token counter + context bar, dark mode, haptics,
   Markdown ringan).
