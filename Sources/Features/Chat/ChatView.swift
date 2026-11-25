@@ -28,6 +28,8 @@ struct ChatView: View {
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingConversations = false
+    /// Pesan pengguna yang sedang diubah lewat sheet editor (Fase 2).
+    @State private var editingMessage: ChatMessage?
 
     init(engine: LlamaEngine, modelContext: ModelContext) {
         self.engine = engine
@@ -56,6 +58,9 @@ struct ChatView: View {
                                         && message.id == viewModel.messages.last?.id
                                 )
                                 .id(message.id)
+                                .contextMenu {
+                                    messageContextMenu(for: message)
+                                }
                             }
                         }
                         Color.clear
@@ -150,6 +155,28 @@ struct ChatView: View {
         .sheet(isPresented: $showingConversations) {
             ConversationListView(viewModel: viewModel)
         }
+        .sheet(item: $editingMessage) { message in
+            EditMessageView(initialText: message.content) { newContent in
+                viewModel.editUserMessage(id: message.id, newContent: newContent)
+            }
+        }
+        .alert(
+            viewModel.pendingToolCall?.title ?? "Jalankan tool?",
+            isPresented: Binding(
+                get: { viewModel.pendingToolCall != nil },
+                set: { if !$0 { viewModel.resolvePendingToolCall(confirmed: false) } }
+            ),
+            presenting: viewModel.pendingToolCall
+        ) { _ in
+            Button("Jalankan") {
+                viewModel.resolvePendingToolCall(confirmed: true)
+            }
+            Button("Batal", role: .cancel) {
+                viewModel.resolvePendingToolCall(confirmed: false)
+            }
+        } message: { pending in
+            Text(pending.message)
+        }
         .task {
             viewModel.restoreLatestConversationIfNeeded()
             await viewModel.loadModelIfNeeded()
@@ -172,24 +199,83 @@ struct ChatView: View {
     // MARK: - Subview
 
     private var statusBar: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(viewModel.isModelLoaded ? Color.green : Color.secondary)
-                .frame(width: 8, height: 8)
-            Text(viewModel.statusText)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer()
-            if let tokPerSec = viewModel.tokPerSec, viewModel.isGenerating {
-                Text(String(format: "%.1f tok/detik", tokPerSec))
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(viewModel.isModelLoaded ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
+                Text(viewModel.statusText)
                     .font(.footnote)
-                    .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                if let tokPerSec = viewModel.tokPerSec, viewModel.isGenerating {
+                    Text(String(format: "%.1f tok/detik", tokPerSec))
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            // Bar konteks Fase 2: pemakaian konteks generation terakhir
+            // (prompt + hasil) terhadap n_ctx. Baru muncul setelah ada
+            // generation; sebelum itu tidak ada angka yang bisa
+            // ditampilkan dengan jujur.
+            if let promptTokens = viewModel.contextPromptTokens,
+               let generatedTokens = viewModel.contextGeneratedTokens,
+               viewModel.contextLimit > 0 {
+                let used = promptTokens + generatedTokens
+                HStack(spacing: 8) {
+                    ProgressView(value: min(Double(used) / Double(viewModel.contextLimit), 1.0))
+                        .progressViewStyle(.linear)
+                    Text("Konteks: \(used)/\(viewModel.contextLimit) token")
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
+    }
+
+    /// Menu tekan-lama per pesan (Fase 2). Salin selalu tersedia;
+    /// Ubah hanya untuk pesan pengguna, Buat ulang hanya untuk pesan
+    /// asisten terakhir — dan semuanya nonaktif saat generation
+    /// berjalan, supaya tidak berebut state dengan Task generation.
+    @ViewBuilder
+    private func messageContextMenu(for message: ChatMessage) -> some View {
+        Button {
+            UIPasteboard.general.string = copyableText(for: message)
+            Haptics.light()
+        } label: {
+            Label("Salin", systemImage: "doc.on.doc")
+        }
+        if message.role == .user {
+            Button {
+                editingMessage = message
+            } label: {
+                Label("Ubah & kirim ulang", systemImage: "pencil")
+            }
+            .disabled(viewModel.isGenerating)
+        }
+        if message.role == .assistant, message.id == viewModel.messages.last?.id {
+            Button {
+                viewModel.regenerateLastAnswer()
+            } label: {
+                Label("Buat ulang jawaban", systemImage: "arrow.clockwise")
+            }
+            .disabled(viewModel.isGenerating)
+        }
+    }
+
+    /// Teks yang disalin: jawaban bersih tanpa blok <think> untuk
+    /// pesan asisten, isi mentah untuk pesan pengguna.
+    private func copyableText(for message: ChatMessage) -> String {
+        if message.role == .assistant {
+            return ThinkBlock.stripped(message.content)
+        }
+        return message.content
     }
 
     private func errorBanner(_ message: String) -> some View {
