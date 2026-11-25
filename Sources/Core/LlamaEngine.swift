@@ -61,8 +61,9 @@ public struct MemoryEstimate: Sendable {
 ///   * `llama_sampler_free` (chain) — di `defer` tiap generation, di
 ///     `LlamaEngine+Generation.swift`. BUKAN di sini.
 ///   * `llama_batch_free` — di `defer` tiap generation, di file yang sama.
-///   * `llama_backend_free` — di `unload()` / `deinit`, dijaga flag
+///   * `llama_backend_free` — HANYA di `deinit`, dijaga flag
 ///     `backendInitialized` supaya tidak dipanggil dua kali.
+///     `unload()` tidak mem-free backend.
 /// - Asumsi instance tunggal: `llama_backend_init/free` bersifat global.
 ///   Jangan buat dua `LlamaEngine` hidup bersamaan di Fase A.
 public actor LlamaEngine {
@@ -106,9 +107,19 @@ public actor LlamaEngine {
         return try await loadModel(at: url, nCtx: parameters.nCtx)
     }
 
-    /// Muat satu file GGUF. Alurnya: validasi magic -> probe vocab-only
-    /// untuk metadata -> estimasi memori -> tolak kalau tidak cukup ->
-    /// load penuh -> buat context.
+    /// Muat satu file GGUF. Alurnya: validasi magic -> load penuh SEKALI
+    /// -> baca metadata dari model yang sudah ter-load -> estimasi memori
+    /// (model di-free lagi kalau estimasi melebihi batas) -> buat context.
+    ///
+    /// TIDAK ADA probe vocab-only: di llama.cpp v1.0.0, `load_hparams`
+    /// langsung `return` untuk model vocab_only (src/llama-model.cpp,
+    /// "everything past this point is not vocab-related"), sehingga
+    /// n_layer_all / n_head_arr tidak pernah diisi. Memanggil
+    /// `llama_model_n_head()` pada model probe itu memicu
+    /// `GGML_ABORT("fatal error")` di `llama_hparams::n_head` — itulah
+    /// force close yang terjadi di device (crash log 26 Nov 2026, dua
+    /// kali, file resmi sekalipun). Metadata HANYA boleh dibaca dari
+    /// model hasil load penuh.
     public func loadModel(at url: URL, nCtx requestedNCtx: Int) async throws -> ModelDescriptor {
         if Task.isCancelled { throw AppError.cancelled }
 
@@ -119,45 +130,11 @@ public actor LlamaEngine {
             llama_backend_init()
             backendInitialized = true
         }
-
-        // 1. Probe metadata tanpa bobot (vocab_only). Cepat, dan memberi
-        //    n_layer / n_head_kv / n_ctx_train yang dibutuhkan estimasi.
-        let probe = try probeMetadata(at: url)
-        var descriptor = ModelDescriptor(fileURL: url, fileSizeBytes: fileSize)
-        descriptor.nParams = probe.nParams
-        descriptor.nLayer = probe.nLayer
-        descriptor.nEmbd = probe.nEmbd
-        descriptor.nHead = probe.nHead
-        descriptor.nHeadKV = probe.nHeadKV
-        descriptor.nCtxTrain = probe.nCtxTrain
-        descriptor.chatTemplate = probe.chatTemplate
-
-        // 2. n_ctx efektif: jangan melebihi context latih model.
-        var effectiveNCtx = Int32(requestedNCtx)
-        if probe.nCtxTrain > 0, effectiveNCtx > probe.nCtxTrain {
-            print("[LlamaEngine] n_ctx diminta \(effectiveNCtx) melebihi n_ctx_train \(probe.nCtxTrain); dipakai \(probe.nCtxTrain).")
-            effectiveNCtx = probe.nCtxTrain
-        }
-        if effectiveNCtx <= 0 { effectiveNCtx = 2048 }
-
-        // 3. Estimasi + guard SEBELUM load penuh.
-        let estimate = estimateMemory(
-            fileBytes: fileSize,
-            nCtx: effectiveNCtx,
-            nLayer: probe.nLayer,
-            nEmbd: probe.nEmbd,
-            nHead: probe.nHead,
-            nHeadKV: probe.nHeadKV
-        )
-        print("[LlamaEngine] Estimasi memori: file=\(estimate.fileBytes) KV=\(estimate.kvBytes) overhead=\(estimate.overheadBytes) total=\(estimate.totalBytes) tersedia=\(estimate.availableBytes) batasAman=\(estimate.safeLimitBytes) n_ctx=\(estimate.nCtx)")
-        if estimate.isOverAvailable || estimate.isOverSafeLimit {
-            throw AppError.outOfMemory(
-                "Estimasi \(ByteCountFormatter.string(fromByteCount: estimate.totalBytes, countStyle: .file)) melebihi memori tersedia \(ByteCountFormatter.string(fromByteCount: Int64(estimate.availableBytes), countStyle: .file)) / batas aman \(ByteCountFormatter.string(fromByteCount: estimate.safeLimitBytes, countStyle: .file)). Coba n_ctx lebih kecil atau model dengan kuantisasi lebih ringan."
-            )
-        }
         if Task.isCancelled { throw AppError.cancelled }
 
-        // 4. Load penuh. Model lama (kalau ada) di-unload dulu.
+        // 1. Load penuh SEKALI. Model lama (kalau ada) di-unload dulu,
+        //    tapi backend TIDAK di-free/re-init di antara load: backend
+        //    hidup selama engine hidup (hanya deinit yang mem-free-nya).
         unload()
         if !backendInitialized {
             llama_backend_init()
@@ -166,10 +143,8 @@ public actor LlamaEngine {
 
         var modelParams = llama_model_default_params()
         // Brief: full offload GPU. Header v1.0.0: nilai negatif berarti
-        // semua layer; 99 > jumlah layer model 3B/4B sehingga efeknya
-        // sama (semua layer), dan nilai yang dipakai tetap yang diminta
-        // brief supaya mudah diaudit di log. Jangan ubah diam-diam.
-        modelParams.n_gpu_layers = 99
+        // semua layer — itu nilai kanonisnya, dipakai di sini.
+        modelParams.n_gpu_layers = -1
         // VERIFY AGAINST HEADER: field lain dibiarkan apa adanya dari
         // llama_model_default_params() (load_mode, mmap, dsb.). Jangan
         // menebak default-nya di sini; nilai aktual tidak di-log oleh
@@ -182,6 +157,58 @@ public actor LlamaEngine {
         }
         self.model = loadedModel
         self.vocab = llama_model_get_vocab(loadedModel)
+
+        // 2. Metadata dibaca dari model yang SUDAH ter-load penuh — baru
+        //    di sini getter-getter ini valid (lihat doc di atas).
+        let nLayer = llama_model_n_layer(loadedModel)
+        let nEmbd = llama_model_n_embd(loadedModel)
+        let nHead = llama_model_n_head(loadedModel)
+        let nHeadKV = llama_model_n_head_kv(loadedModel)
+        let nCtxTrain = llama_model_n_ctx_train(loadedModel)
+        var descriptor = ModelDescriptor(fileURL: url, fileSizeBytes: fileSize)
+        descriptor.nParams = llama_model_n_params(loadedModel)
+        descriptor.nLayer = nLayer
+        descriptor.nEmbd = nEmbd
+        descriptor.nHead = nHead
+        descriptor.nHeadKV = nHeadKV
+        descriptor.nCtxTrain = nCtxTrain
+        let templatePtr = llama_model_chat_template(loadedModel, nil)
+        descriptor.chatTemplate = templatePtr.map { String(cString: $0) }.flatMap { $0.isEmpty ? nil : $0 }
+
+        // 3. n_ctx efektif: jangan melebihi context latih model.
+        var effectiveNCtx = Int32(requestedNCtx)
+        if nCtxTrain > 0, effectiveNCtx > nCtxTrain {
+            print("[LlamaEngine] n_ctx diminta \(effectiveNCtx) melebihi n_ctx_train \(nCtxTrain); dipakai \(nCtxTrain).")
+            effectiveNCtx = nCtxTrain
+        }
+        if effectiveNCtx <= 0 { effectiveNCtx = 2048 }
+
+        // 4. Estimasi + guard. Model sudah ter-load di titik ini; kalau
+        //    estimasi melebihi batas, model di-free lagi dan dilempar
+        //    error yang bisa ditampilkan — tidak ada context yang dibuat.
+        let estimate = estimateMemory(
+            fileBytes: fileSize,
+            nCtx: effectiveNCtx,
+            nLayer: nLayer,
+            nEmbd: nEmbd,
+            nHead: nHead,
+            nHeadKV: nHeadKV
+        )
+        print("[LlamaEngine] Estimasi memori: file=\(estimate.fileBytes) KV=\(estimate.kvBytes) overhead=\(estimate.overheadBytes) total=\(estimate.totalBytes) tersedia=\(estimate.availableBytes) batasAman=\(estimate.safeLimitBytes) n_ctx=\(estimate.nCtx)")
+        if estimate.isOverAvailable || estimate.isOverSafeLimit {
+            llama_model_free(loadedModel)
+            self.model = nil
+            self.vocab = nil
+            throw AppError.outOfMemory(
+                "Estimasi \(ByteCountFormatter.string(fromByteCount: estimate.totalBytes, countStyle: .file)) melebihi memori tersedia \(ByteCountFormatter.string(fromByteCount: Int64(estimate.availableBytes), countStyle: .file)) / batas aman \(ByteCountFormatter.string(fromByteCount: estimate.safeLimitBytes, countStyle: .file)). Coba n_ctx lebih kecil atau model dengan kuantisasi lebih ringan."
+            )
+        }
+        if Task.isCancelled {
+            llama_model_free(loadedModel)
+            self.model = nil
+            self.vocab = nil
+            throw AppError.cancelled
+        }
 
         var ctxParams = llama_context_default_params()
         ctxParams.n_ctx = UInt32(effectiveNCtx)
@@ -227,10 +254,9 @@ public actor LlamaEngine {
         vocab = nil
         loadedDescriptor = nil
         actualNCtx = 0
-        if backendInitialized {
-            llama_backend_free()
-            backendInitialized = false
-        }
+        // Backend sengaja TIDAK di-free di sini: backend hidup selama
+        // engine hidup dan hanya di-free di deinit. Free/re-init backend
+        // di antara load adalah siklus yang rapuh dan tidak diperlukan.
     }
 
     /// Hentikan generation yang sedang berjalan dari sisi luar actor dan
@@ -254,42 +280,7 @@ public actor LlamaEngine {
         llama_memory_clear(memory, true)
     }
 
-    // MARK: - Metadata probe
-
-    private struct ProbeResult {
-        let nParams: UInt64
-        let nLayer: Int32
-        let nEmbd: Int32
-        let nHead: Int32
-        let nHeadKV: Int32
-        let nCtxTrain: Int32
-        let chatTemplate: String?
-    }
-
-    private func probeMetadata(at url: URL) throws -> ProbeResult {
-        var params = llama_model_default_params()
-        params.vocab_only = true
-        params.n_gpu_layers = 0
-        let probeModel: OpaquePointer? = url.path.withCString { cPath in
-            llama_model_load_from_file(cPath, params)
-        }
-        guard let probeModel else {
-            throw AppError.modelCorrupted("Gagal membaca metadata GGUF (probe vocab-only): \(url.lastPathComponent)")
-        }
-        defer { llama_model_free(probeModel) }
-
-        let templatePtr = llama_model_chat_template(probeModel, nil)
-        let template: String? = templatePtr.map { String(cString: $0) }
-        return ProbeResult(
-            nParams: llama_model_n_params(probeModel),
-            nLayer: llama_model_n_layer(probeModel),
-            nEmbd: llama_model_n_embd(probeModel),
-            nHead: llama_model_n_head(probeModel),
-            nHeadKV: llama_model_n_head_kv(probeModel),
-            nCtxTrain: llama_model_n_ctx_train(probeModel),
-            chatTemplate: template.flatMap { $0.isEmpty ? nil : $0 }
-        )
-    }
+    // MARK: - Deskripsi model
 
     private func modelDescription(of model: OpaquePointer) -> String {
         var buffer = [CChar](repeating: 0, count: 1024)
