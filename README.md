@@ -3,11 +3,12 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase D.** Persistensi SwiftData + multi-conversation (daftar
-percakapan, pulihkan percakapan terakhir saat app dibuka, hapus
-percakapan) di atas Fase A–C. Fitur Fase 2 (regenerate/edit/copy, token
-counter + context bar, dark mode, haptics, Markdown ringan) belum ada.
-Lihat bagian "Peta fase" di bawah.
+**Status: Fase 2 + Agent.** Di atas Fase A–D: regenerate/edit/copy,
+penghitung token + bar konteks, dark mode, haptik, Markdown ringan,
+dan agent tools (waktu, info perangkat, kalender, pengingat, kontak,
+Shortcut) dengan orkestrasi tool-call 2 langkah dan konfirmasi untuk
+tool tulis/eksternal. Redesign UI/UX menyeluruh belum dikerjakan
+(terakhir, sesuai arahan pengguna). Lihat bagian "Peta fase" di bawah.
 
 ## Pin llama.cpp — baca ini dulu
 
@@ -257,8 +258,16 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
 - **Fase D:** Persistensi SwiftData + multi-conversation (model
   `Conversation`/`StoredMessage`, daftar percakapan di sheet ChatView,
   restore percakapan terakhir, hapus percakapan; simpan pada titik
-  diskrit, bukan per flush token). Fitur Fase 2 (regenerate/edit/copy,
-  token counter + context bar, dark mode, haptics, Markdown ringan)
-  belum ada.
+  diskrit, bukan per flush token).
+- **Fase 2 + Agent:** regenerate/edit/copy (menu tekan-lama),
+  penghitung token + bar konteks (event `.usage` dari engine),
+  dark mode (Skema warna di Settings), haptik, Markdown ringan
+  (inline-only di bubble asisten). Agent: 7 tools (waktu, info
+  perangkat, jadwal kalender, buat acara, buat pengingat, cari
+  kontak, jalankan Shortcut) dengan parser JSON tool-call,
+  konfirmasi untuk tool tulis/eksternal, dan izin sistem
+  (Kalender/Pengingat/Kontak) di `project.yml`. Tidak ada akses ke
+  isi aplikasi lain dan tidak ada ubah pengaturan sistem langsung —
+  batas sandbox iOS.
 
 Setiap fase berhenti untuk review sebelum fase berikutnya dimulai.
