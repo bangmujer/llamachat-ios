@@ -102,10 +102,16 @@ struct ChatView: View {
         }
         .fileImporter(
             isPresented: $showingPicker,
-            allowedContentTypes: [ggufType],
+            allowedContentTypes: [UTType.gguf, .data],
             allowsMultipleSelection: false
         ) { result in
             viewModel.importPickedModel(result: result)
+        }
+        .onOpenURL { url in
+            // File .gguf yang dibuka lewat "Buka di LlamaChat" dari
+            // Files/share sheet mendarat sebagai URL Inbox; perlakukan
+            // sama seperti hasil picker: salin ke Models/ + validasi.
+            viewModel.importPickedModel(result: .success([url]))
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(viewModel: viewModel)
@@ -190,6 +196,6 @@ struct ChatView: View {
     }
 
     private var ggufType: UTType {
-        UTType(filenameExtension: "gguf") ?? .data
+        UTType.gguf
     }
 }
