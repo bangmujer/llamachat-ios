@@ -2,24 +2,21 @@ import Foundation
 
 /// Template chat.
 ///
-/// Dua jalur, dan jangan dicampur:
+/// Keputusan Fase C: template TIDAK dirender lewat
+/// `llama_chat_apply_template`. Header v1.0.0 menegaskan fungsi itu
+/// "does not use a jinja parser" dan hanya mendukung daftar template
+/// bawaan tertentu, jadi memanggilnya dengan template Jinja mentah dari
+/// metadata GGUF bukan jalur yang bisa diandalkan untuk semua model.
+/// Sebagai gantinya, `.auto` mendeteksi keluarga template dari isi
+/// template metadata itu sendiri (penanda khas tiap keluarga) lewat
+/// `ChatTemplate.detect(from:)`, lalu render dilakukan oleh string
+/// builder murni Swift di file ini. Pengguna bisa meng-override lewat
+/// Settings; override disimpan per-model di `ModelSettingsStore`.
 ///
-/// 1. JALUR UTAMA (Fase C): template Jinja mentah dari metadata GGUF
-///    (`llama_model_chat_template`) dirender oleh llama.cpp sendiri lewat
-///    `llama_chat_apply_template`. Kode Swift TIDAK mem-parse Jinja.
-///    Header v1.0.0 menegaskan fungsi itu "does not use a jinja parser"
-///    dan hanya mendukung daftar template bawaan tertentu.
-///
-/// 2. JALUR FALLBACK (file ini): template manual sebagai string builder
-///    murni Swift, dipakai HANYA kalau model tidak membawa template dan
-///    pengguna memilih manual di Fase C. String-string di bawah adalah
-///    bentuk ChatML / Llama 3 / Gemma / Mistral yang umum; engine Fase A
-///    me-log 500 karakter pertama template bawaan model supaya fallback
-///    ini bisa dibandingkan dengan template asli model di review Fase A.
-///
-/// Fase A memakai jalur fallback `.chatML` untuk smoke test Qwen3 dan
-/// jalur `.raw` sebagai kontrol. Pemilihan template per-model + override
-/// pengguna adalah pekerjaan Fase C, bukan Fase A.
+/// String-string di bawah adalah bentuk ChatML / Llama 3 / Gemma /
+/// Mistral yang umum; engine me-log 500 karakter pertama template
+/// bawaan model supaya hasil deteksi bisa dibandingkan dengan template
+/// asli model di review.
 public enum ChatTemplateKind: String, CaseIterable, Codable, Sendable {
     case auto
     case chatML
@@ -41,6 +38,27 @@ public enum ChatTemplateKind: String, CaseIterable, Codable, Sendable {
 }
 
 public enum ChatTemplate {
+    /// Tebak keluarga template dari isi template metadata model.
+    /// Penanda yang dicek adalah penanda khas yang hanya muncul di
+    /// keluarga itu: `<|im_start|>` (ChatML), `<|start_header_id|>`
+    /// (Llama 3), `<start_of_turn>` (Gemma), `[INST]` (Mistral).
+    /// Template kosong / tidak dikenal -> ChatML (keluarga Qwen3).
+    public static func detect(from template: String?) -> ChatTemplateKind {
+        guard let template, !template.isEmpty else { return .chatML }
+        if template.contains("<|im_start|>") { return .chatML }
+        if template.contains("<|start_header_id|>") { return .llama3 }
+        if template.contains("<start_of_turn>") { return .gemma }
+        if template.contains("[INST]") { return .mistral }
+        return .chatML
+    }
+
+    /// Selesaikan pilihan pengguna: `.auto` diganti hasil deteksi dari
+    /// metadata model yang sedang ter-load; pilihan eksplisit dipakai
+    /// apa adanya.
+    public static func resolve(kind: ChatTemplateKind, metadata: String?) -> ChatTemplateKind {
+        kind == .auto ? detect(from: metadata) : kind
+    }
+
     /// Render pesan menjadi satu prompt string, tanpa memanggil C API.
     ///
     /// `systemPrompt` kosong berarti tidak ada pesan system.
