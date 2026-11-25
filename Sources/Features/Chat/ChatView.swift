@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Chat UI Fase B: satu percakapan di memori.
@@ -57,6 +58,15 @@ struct ChatView: View {
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 12)
+                }
+                // Ketuk area pesan (di luar keyboard) = keyboard turun.
+                // Sengaja hanya di ScrollView, BUKAN di VStack luar:
+                // gesture di luar akan ikut bereaksi saat TextField
+                // composer diketuk dan keyboard langsung tertutup lagi.
+                // Scroll juga menurunkan keyboard secara interaktif.
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture {
+                    hideKeyboard()
                 }
                 .onChange(of: viewModel.scrollVersion) { _, _ in
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -126,6 +136,19 @@ struct ChatView: View {
         .task {
             await viewModel.loadModelIfNeeded()
         }
+    }
+
+    // MARK: - Keyboard
+
+    /// Turunkan keyboard yang sedang aktif, apa pun first responder-nya.
+    /// Dipakai tap-di-luar di area pesan; TextField composer tidak punya
+    /// @FocusState sendiri, jadi resignFirstResponder lewat UIKit adalah
+    /// cara yang tidak mengubah struktur ComposerBar.
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
     }
 
     // MARK: - Subview
