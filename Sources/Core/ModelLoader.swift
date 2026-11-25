@@ -1,4 +1,18 @@
 import Foundation
+import UniformTypeIdentifiers
+
+/// Tipe konten .gguf untuk document picker.
+///
+/// Setelah `org.ggml.gguf` dideklarasikan di Info.plist (lihat
+/// project.yml), `UTType(filenameExtension: "gguf")` mengembalikan tipe
+/// itu. Fallback `.data` menjaga picker tetap bisa memilih file kalau
+/// deklarasi tipe entah kenapa tidak terbaca — file yang bukan GGUF
+/// tetap ditolak belakangan oleh validasi magic di import.
+public extension UTType {
+    static var gguf: UTType {
+        UTType(filenameExtension: "gguf") ?? .data
+    }
+}
 
 /// Lokasi + validasi file GGUF di disk.
 ///
