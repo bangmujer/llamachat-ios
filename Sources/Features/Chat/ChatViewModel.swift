@@ -179,6 +179,11 @@ public final class ChatViewModel: ObservableObject {
                         try FileManager.default.removeItem(at: destination)
                     }
                     try FileManager.default.copyItem(at: picked, to: destination)
+                    // Tolak sejak di sini kalau file yang dipilih bukan
+                    // GGUF (mis. karena picker mengizinkan .data): file
+                    // dihapus lagi supaya tidak mengotori daftar model
+                    // dengan file yang pasti gagal saat load.
+                    try ModelLoader.validateGGUFMagic(at: destination)
                     let size = try ModelLoader.fileSizeBytes(at: destination)
                     statusText = "Model tersalin: \(destination.lastPathComponent) (\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))). Memuat…"
                     hasAttemptedLoad = false
