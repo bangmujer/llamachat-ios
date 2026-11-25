@@ -32,6 +32,14 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var isModelLoaded = false
     @Published public private(set) var modelName: String?
     @Published public private(set) var actualNCtx: Int32 = 0
+    /// Descriptor model yang sedang ter-load, lengkap dengan metadata
+    /// runtime (termasuk chat template mentah untuk auto-detect).
+    @Published public private(set) var loadedDescriptor: ModelDescriptor?
+    /// Parameter sampling aktif. Diubah lewat `applyParameters` (Fase C)
+    /// dan disimpan per-model; dibaca dari simpanan saat model di-load.
+    @Published public private(set) var parameters: SamplingParameters
+    /// Pilihan template pengguna (`.auto` = deteksi dari metadata).
+    @Published public private(set) var templateKind: ChatTemplateKind = .auto
     @Published public private(set) var tokPerSec: Double?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var statusText: String = "Belum ada model."
@@ -44,8 +52,6 @@ public final class ChatViewModel: ObservableObject {
     /// UserDefaults dan langsung berlaku untuk pesan berikutnya setelah
     /// diubah — tidak perlu restart, tidak perlu load ulang model.
     @Published public private(set) var systemPrompt: String
-
-    public let parameters: SamplingParameters
 
     private var generationTask: Task<Void, Never>?
     private var hasAttemptedLoad = false
@@ -91,14 +97,24 @@ public final class ChatViewModel: ObservableObject {
         statusText = "Memuat model…"
         defer { isLoadingModel = false }
         do {
-            let descriptor = try await engine.loadFirstModel(parameters: parameters)
+            // Pengaturan tersimpan dibaca DULU dari nama file model
+            // pertama, supaya n_ctx tersimpan yang dipakai saat load
+            // (bukan default lalu load ulang).
+            let firstURL = try ModelLoader.firstModel()
+            let stored = ModelSettingsStore.load(for: firstURL.lastPathComponent)
+            let effectiveParameters = stored?.parameters ?? parameters
+            let descriptor = try await engine.loadModel(at: firstURL, nCtx: effectiveParameters.nCtx)
             let nCtx = await engine.actualNCtx
+            parameters = effectiveParameters
+            templateKind = stored?.template ?? .auto
+            loadedDescriptor = descriptor
             modelName = descriptor.fileName
             actualNCtx = nCtx
             isModelLoaded = true
             statusText = "Model siap: \(descriptor.fileName) (\(descriptor.displaySize)), n_ctx \(nCtx)."
         } catch let error as AppError {
             isModelLoaded = false
+            loadedDescriptor = nil
             statusText = error.errorDescription ?? error.localizedDescription
             // Hanya tampilkan sebagai banner kalau bukan sekadar
             // "belum ada model" — state kosong sudah menjelaskan itu.
@@ -109,14 +125,46 @@ public final class ChatViewModel: ObservableObject {
             }
         } catch {
             isModelLoaded = false
+            loadedDescriptor = nil
             statusText = error.localizedDescription
             errorMessage = error.localizedDescription
         }
     }
 
+    /// Unload model dari engine. Dipakai Model Manager sebelum menghapus
+    /// file model yang sedang ter-load, dan saat pengguna mengganti
+    /// n_ctx lewat Settings (load ulang sesudahnya).
+    public func unloadModel() async {
+        stop()
+        await engine.unload()
+        isModelLoaded = false
+        loadedDescriptor = nil
+        modelName = nil
+        actualNCtx = 0
+        statusText = "Model di-unload."
+    }
+
+    /// Terapkan parameter + template baru untuk model yang sedang
+    /// ter-load, dan simpan per-model. Perubahan parameter selain n_ctx
+    /// berlaku untuk generation berikutnya tanpa load ulang; perubahan
+    /// n_ctx memicu unload + load ulang dengan n_ctx baru.
+    public func applyParameters(_ newParameters: SamplingParameters, templateKind newTemplateKind: ChatTemplateKind) async {
+        let oldNCtx = parameters.nCtx
+        parameters = newParameters
+        templateKind = newTemplateKind
+        if let name = modelName {
+            ModelSettingsStore.save(for: name, parameters: newParameters, template: newTemplateKind)
+        }
+        guard newParameters.nCtx != oldNCtx, isModelLoaded else { return }
+        await unloadModel()
+        hasAttemptedLoad = false
+        await loadModelIfNeeded()
+    }
+
     /// Salin file .gguf pilihan pengguna ke Models/, lalu load.
-    /// Dipakai sampai Model Manager Fase C ada; logika salinnya sama
-    /// dengan harness Fase A supaya Fase B tetap bisa diuji di device.
+    /// Tetap ada di empty state ChatView dan di Model Manager sampai
+    /// download URL (Fase C) teruji; logika salinnya sama dengan
+    /// harness Fase A.
     public func importPickedModel(result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
@@ -180,9 +228,10 @@ public final class ChatViewModel: ObservableObject {
             statusText = "Menjawab…"
 
             // Render seluruh riwayat (tanpa wadah kosong) + system prompt.
+            // Template .auto diselesaikan dari metadata model ter-load.
             let history = messages.filter { $0.id != assistantId }
             let prompt = ChatTemplate.render(
-                kind: .chatML,
+                kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
                 systemPrompt: systemPrompt,
                 messages: history
             )
