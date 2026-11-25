@@ -1,0 +1,60 @@
+name: Build LlamaChat IPA (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcodebuild -version
+          cmake --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # llama.cpp v1.0.0 dipin di sini DAN di README.md. Jangan ubah tag di
+      # satu tempat saja. Script upstream: build-xcframework.sh dari repo
+      # ggml-org/llama.cpp. Argumen "ios-device" saja: user memutuskan
+      # device arm64 saja, tanpa slice simulator.
+      # Default script sudah GGML_METAL=ON dan GGML_METAL_EMBED_LIBRARY=ON.
+      - name: Build llama.xcframework (ios-device only)
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/llama.cpp
+          git clone --depth 1 --branch v1.0.0 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cd /tmp/llama.cpp
+          git rev-parse HEAD
+          ./build-xcframework.sh ios-device
+          ls -lh build-apple/llama.xcframework
+          mkdir -p "$GITHUB_WORKSPACE/ThirdParty"
+          cp -R build-apple/llama.xcframework "$GITHUB_WORKSPACE/ThirdParty/llama.xcframework"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned archive
+        run: |
+          xcodebuild -project LlamaChat.xcodeproj -scheme LlamaChat -configuration Release -sdk iphoneos -archivePath build/LlamaChat.xcarchive archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned IPA from xcarchive
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/LlamaChat.xcarchive/Products/Applications/*.app build/ipa/Payload/
+          (cd build/ipa && zip -qr llamachat-unsigned.ipa Payload)
+          ls -lh build/ipa/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: llamachat-ios-unsigned-ipa
+          path: build/ipa/*.ipa
+          retention-days: 30
