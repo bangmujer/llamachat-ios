@@ -26,6 +26,18 @@ import SwiftUI
 /// Throttle UI: token dari engine dibuffer dan di-flush ke pesan
 /// maksimal tiap 50 ms (~20 fps, sesuai brief), supaya ScrollView tidak
 /// me-render ulang per token.
+/// Permintaan tool yang menunggu konfirmasi pengguna (Fase 2 + Agent).
+/// Non-nil = dialog konfirmasi sedang tampil di `ChatView`. Dipakai
+/// sebagai `item` untuk `.alert(item:)` di View, jadi harus
+/// `Identifiable`.
+public struct PendingToolCall: Identifiable, Equatable {
+    public let id = UUID()
+    public let request: ToolCallRequest
+
+    public var title: String { "Jalankan tool?" }
+    public var message: String { request.summary }
+}
+
 @MainActor
 public final class ChatViewModel: ObservableObject {
     private static let systemPromptDefaultsKey = "llamachat.systemPrompt"
@@ -73,6 +85,17 @@ public final class ChatViewModel: ObservableObject {
     /// pada perbandingan string isi pesan.
     @Published public private(set) var scrollVersion = 0
 
+    /// Token konteks dari generation terakhir (Fase 2): jumlah token
+    /// prompt, token yang dihasilkan, dan batas n_ctx. Nil = belum ada
+    /// generation sejak app dibuka. Dipakai bar konteks di `ChatView`.
+    @Published public private(set) var contextPromptTokens: Int?
+    @Published public private(set) var contextGeneratedTokens: Int?
+    @Published public private(set) var contextLimit: Int = 0
+
+    /// Permintaan tool yang menunggu konfirmasi pengguna (Fase 2 +
+    /// Agent). Nil kalau tidak ada dialog konfirmasi yang tampil.
+    @Published public private(set) var pendingToolCall: PendingToolCall?
+
     /// System prompt yang dipakai generation BERIKUTNYA. Disimpan di
     /// UserDefaults dan langsung berlaku untuk pesan berikutnya setelah
     /// diubah — tidak perlu restart, tidak perlu load ulang model.
@@ -81,12 +104,23 @@ public final class ChatViewModel: ObservableObject {
     private var generationTask: Task<Void, Never>?
     private var hasAttemptedLoad = false
 
+    /// Pelaksana tool agent. Satu instance per ViewModel; tidak ada
+    /// state antar pemanggilan yang perlu dijaga.
+    private let toolExecutor = ToolExecutor()
+    /// Continuation yang menunggu jawaban dialog konfirmasi tool.
+    /// WAJIB di-resume tepat sekali — `resolvePendingToolCall` dan
+    /// `stop()` adalah satu-satunya tempat yang me-resume-nya.
+    private var pendingToolContinuation: CheckedContinuation<Bool, Never>?
+
     public init(engine: LlamaEngine, modelContext: ModelContext) {
         self.engine = engine
         self.modelContext = modelContext
         self.parameters = SamplingParameters.defaultForCurrentDevice()
         let saved = UserDefaults.standard.string(forKey: Self.systemPromptDefaultsKey)
-        if let saved, !saved.isEmpty {
+        if let saved {
+            // String kosong yang tersimpan berarti pengguna sengaja
+            // mengosongkan system prompt (Fase 2: editor mengizinkan
+            // kosong) — jangan ganti dengan default.
             self.systemPrompt = saved
         } else {
             self.systemPrompt = Self.defaultSystemPrompt
@@ -241,7 +275,49 @@ public final class ChatViewModel: ObservableObject {
         // Pesan pengguna langsung disimpan, supaya tidak hilang kalau
         // app ditutup di tengah generation.
         persistCurrentConversation()
+        Haptics.light()
+        startReplyTurn()
+    }
 
+    /// Buat ulang jawaban terakhir (Fase 2): hapus pesan asisten
+    /// terakhir, lalu jalankan generation ulang atas riwayat yang sama
+    /// tanpa menambahkan pesan pengguna baru.
+    public func regenerateLastAnswer() {
+        guard !isGenerating, generationTask == nil else { return }
+        guard let last = messages.last, last.role == .assistant,
+              !last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard messages.contains(where: { $0.role == .user }) else { return }
+        messages.removeLast()
+        errorMessage = nil
+        persistCurrentConversation()
+        Haptics.light()
+        startReplyTurn()
+    }
+
+    /// Ubah pesan pengguna lalu kirim ulang (Fase 2): semua pesan
+    /// setelah pesan yang diubah dibuang, isi pesan diganti, lalu
+    /// generation dijalankan ulang dari titik itu.
+    public func editUserMessage(id: UUID, newContent: String) {
+        guard !isGenerating, generationTask == nil else { return }
+        let text = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard let index = messages.firstIndex(where: { $0.id == id }),
+              messages[index].role == .user else { return }
+        stop()
+        messages = Array(messages[..<index]) + [ChatMessage(id: id, role: .user, content: text)]
+        if index == 0 {
+            conversationTitle = String(text.prefix(40))
+        }
+        errorMessage = nil
+        persistCurrentConversation()
+        Haptics.light()
+        startReplyTurn()
+    }
+
+    /// Satu giliran generation: wadah asisten kosong, render prompt,
+    /// (opsional) orkestrasi tool agent, streaming, outcome, persist.
+    /// Dipakai `send`, `regenerateLastAnswer`, dan `editUserMessage`.
+    private func startReplyTurn() {
         generationTask = Task {
             defer {
                 isGenerating = false
@@ -271,11 +347,98 @@ public final class ChatViewModel: ObservableObject {
             let history = messages.filter { $0.id != assistantId }
                 .map { ChatMessage(id: $0.id, role: $0.role, content: ThinkBlock.stripped($0.content)) }
                 .filter { !($0.role == .assistant && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-            let prompt = ChatTemplate.render(
+            var prompt = ChatTemplate.render(
                 kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
                 systemPrompt: systemPrompt,
                 messages: history
             )
+
+            // MARK: Orkestrasi agent (Fase 2 + Agent), dua langkah.
+            //
+            // Langkah 1 (diam, tanpa streaming): generation yang sama
+            // dengan instruksi tool tambahan. Model boleh menjawab
+            // biasa (teks itu yang ditampilkan) atau mengeluarkan SATU
+            // blok JSON tool-call. Generation ini memakai parameter
+            // penuh supaya jawaban biasa tidak terpotong; kalau model
+            // memang memanggil tool, generation berhenti sendiri di
+            // EOS sesudah blok JSON.
+            //
+            // Langkah 2 (hanya kalau ada tool call): konfirmasi kalau
+            // tool-nya wajib konfirmasi, eksekusi tool, lalu generation
+            // kedua — yang di-stream ke bubble — dengan hasil tool
+            // sebagai pesan system di riwayat prompt.
+            //
+            // Kalau langkah 1 gagal/dibatalkan, perlakuannya sama
+            // seperti kegagalan generation biasa (return lebih awal).
+            // Kalau langkah 1 menghasilkan teks kosong (mis. terpotong
+            // di tengah blok <think>), jatuh ke generation normal di
+            // bawah supaya pengguna tetap mendapat jawaban.
+            if !ToolPreferences.enabledTools.isEmpty {
+                let toolSystemPrompt = systemPrompt + "\n\n" + ToolPrompt.preamble(for: ToolPreferences.enabledTools)
+                let decisionPrompt = ChatTemplate.render(
+                    kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
+                    systemPrompt: toolSystemPrompt,
+                    messages: history
+                )
+                statusText = "Memeriksa apakah perlu tool…"
+                let decision = await collectGeneration(prompt: decisionPrompt, parameters: parameters)
+
+                if let failure = decision.failure {
+                    removeMessageIfEmpty(assistantId)
+                    statusText = failure.errorDescription ?? failure.localizedDescription
+                    errorMessage = failure.errorDescription
+                    Haptics.error()
+                    return
+                }
+                if decision.outcome == .cancelled || Task.isCancelled {
+                    removeMessageIfEmpty(assistantId)
+                    statusText = "Dibatalkan."
+                    return
+                }
+
+                let strippedDecision = ThinkBlock.stripped(decision.text)
+                if let call = ToolCallParser.parse(from: strippedDecision) {
+                    if call.tool.requiresConfirmation {
+                        statusText = "Menunggu konfirmasi tool…"
+                        let confirmed = await requestToolConfirmation(call)
+                        if Task.isCancelled {
+                            removeMessageIfEmpty(assistantId)
+                            statusText = "Dibatalkan."
+                            return
+                        }
+                        guard confirmed else {
+                            flush("Tool dibatalkan. Tidak ada aksi yang dijalankan.", to: assistantId)
+                            statusText = "Dibatalkan."
+                            persistCurrentConversation()
+                            return
+                        }
+                    }
+                    statusText = "Menjalankan tool: \(call.tool.displayName)…"
+                    let result = await toolExecutor.execute(call)
+                    Haptics.success()
+                    let historyWithResult = history + [ChatMessage(
+                        role: .system,
+                        content: "Hasil tool '\(call.tool.rawValue)':\n\(result)\nJawablah pertanyaan pengguna memakai hasil ini. Jangan mengklaim tool belum dijalankan."
+                    )]
+                    prompt = ChatTemplate.render(
+                        kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
+                        systemPrompt: systemPrompt,
+                        messages: historyWithResult
+                    )
+                    statusText = "Menjawab…"
+                } else {
+                    let answer = ToolCallParser.strippingToolBlock(from: strippedDecision)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !answer.isEmpty {
+                        flush(answer, to: assistantId)
+                        statusText = "Selesai."
+                        Haptics.success()
+                        persistCurrentConversation()
+                        return
+                    }
+                    // Teks keputusan kosong: jatuh ke generation normal.
+                }
+            }
 
             let stream = await engine.generate(prompt: prompt, parameters: parameters)
             var pendingText = ""
@@ -296,6 +459,8 @@ public final class ChatViewModel: ObservableObject {
                     }
                 case .stats(let rate):
                     tokPerSec = rate
+                case .usage(let promptTokens, let generatedTokens, let nCtx):
+                    recordUsage(promptTokens: promptTokens, generatedTokens: generatedTokens, nCtx: nCtx)
                 case .done(let reason):
                     outcome = reason
                 case .failed(let error):
@@ -312,17 +477,20 @@ public final class ChatViewModel: ObservableObject {
                 removeMessageIfEmpty(assistantId)
                 statusText = failure.errorDescription ?? failure.localizedDescription
                 errorMessage = failure.errorDescription
+                Haptics.error()
                 return
             }
 
             switch outcome {
             case .endOfTurn, .maxTokens:
                 statusText = "Selesai."
+                Haptics.success()
             case .contextOverflow:
                 removeMessageIfEmpty(assistantId)
                 let detail = "Riwayat percakapan melebihi konteks model (n_ctx \(actualNCtx)). Mulai percakapan baru."
                 statusText = detail
                 errorMessage = detail
+                Haptics.error()
             case .cancelled, .none:
                 // Stop oleh pengguna: teks parsial dipertahankan kalau
                 // ada; wadah kosong dihapus supaya tidak ada bubble kosong.
@@ -339,10 +507,79 @@ public final class ChatViewModel: ObservableObject {
     /// Stop yang benar-benar menghentikan decode: membatalkan Task
     /// konsumen membuat loop `for await` break, menutup stream, dan
     /// `onTermination` di engine membatalkan Task produsen decode.
+    /// Kalau ada dialog konfirmasi tool yang sedang menunggu, dialog
+    /// itu ditolak (tool tidak dijalankan).
     public func stop() {
+        if pendingToolContinuation != nil {
+            resolvePendingToolCall(confirmed: false)
+        }
         generationTask?.cancel()
         generationTask = nil
         statusText = "Stop diminta — menunggu decode berhenti…"
+    }
+
+    // MARK: - Agent: generation terkumpul & konfirmasi tool
+
+    /// Hasil satu generation yang dijalankan tanpa streaming ke bubble
+    /// (langkah keputusan tool). Teks tetap dikumpulkan penuh.
+    private struct CollectedGeneration {
+        var text = ""
+        var outcome: DoneReason?
+        var failure: AppError?
+    }
+
+    /// Jalankan generation dan kumpulkan seluruh teksnya tanpa
+    /// menampilkan ke bubble. Dipakai langkah keputusan tool.
+    private func collectGeneration(
+        prompt: String,
+        parameters: SamplingParameters
+    ) async -> CollectedGeneration {
+        var result = CollectedGeneration()
+        let stream = await engine.generate(prompt: prompt, parameters: parameters)
+        for await event in stream {
+            if Task.isCancelled { break }
+            switch event {
+            case .token(let piece):
+                result.text += piece
+            case .stats(let rate):
+                tokPerSec = rate
+            case .usage(let promptTokens, let generatedTokens, let nCtx):
+                recordUsage(promptTokens: promptTokens, generatedTokens: generatedTokens, nCtx: nCtx)
+            case .done(let reason):
+                result.outcome = reason
+            case .failed(let error):
+                result.failure = error
+            }
+        }
+        return result
+    }
+
+    /// Simpan angka pemakaian konteks terakhir untuk bar konteks.
+    private func recordUsage(promptTokens: Int, generatedTokens: Int, nCtx: Int) {
+        contextPromptTokens = promptTokens
+        contextGeneratedTokens = generatedTokens
+        contextLimit = nCtx
+    }
+
+    /// Tampilkan dialog konfirmasi dan tunggu jawaban pengguna.
+    /// Tool yang tidak wajib konfirmasi tidak pernah memanggil ini
+    /// (pemanggil mengecek `requiresConfirmation` dulu).
+    private func requestToolConfirmation(_ call: ToolCallRequest) async -> Bool {
+        await withCheckedContinuation { continuation in
+            pendingToolContinuation = continuation
+            pendingToolCall = PendingToolCall(request: call)
+        }
+    }
+
+    /// Jawaban dialog konfirmasi tool, dari `ChatView`. Me-resume
+    /// continuation tepat sekali; pemanggilan kedua tanpa continuation
+    /// yang menunggu tidak melakukan apa-apa.
+    public func resolvePendingToolCall(confirmed: Bool) {
+        guard let continuation = pendingToolContinuation else { return }
+        pendingToolContinuation = nil
+        pendingToolCall = nil
+        Haptics.light()
+        continuation.resume(returning: confirmed)
     }
 
     public func startNewChat() {
