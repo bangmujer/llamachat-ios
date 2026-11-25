@@ -3,9 +3,9 @@ import Foundation
 /// Deskripsi satu file model GGUF di disk.
 ///
 /// `nLayer`, `nEmbd`, `nHead`, `nHeadKV`, `nCtxTrain`, dan `chatTemplate`
-/// hanya terisi SETELAH probe metadata berhasil (lihat `LlamaEngine`).
+/// hanya terisi SETELAH load penuh (lihat `LlamaEngine`).
 /// Sebelum itu nilainya nil — jangan pakai angka-angka itu untuk estimasi
-/// memori sebelum probe.
+/// memori sebelum load.
 public struct ModelDescriptor: Identifiable, Equatable, Sendable {
     public let id: String
     public let fileURL: URL
