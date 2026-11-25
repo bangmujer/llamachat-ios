@@ -3,9 +3,10 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase A.** Load model + generate satu prompt (harness sementara).
-Chat UI (Fase B), Settings / Model Manager (Fase C), dan persistensi
-SwiftData (Fase D) belum ada. Lihat bagian "Peta fase" di bawah.
+**Status: Fase B.** Chat UI (satu percakapan di memori) + streaming +
+Stop + system prompt (UserDefaults). Harness Fase A sudah diganti
+`ChatView`. Settings / Model Manager (Fase C) dan persistensi SwiftData
+(Fase D) belum ada. Lihat bagian "Peta fase" di bawah.
 
 ## Pin llama.cpp — baca ini dulu
 
@@ -54,7 +55,8 @@ SwiftData (Fase D) belum ada. Lihat bagian "Peta fase" di bawah.
 ```
 App/
   LlamaChatApp.swift        @main; memory-warning -> engine
-  PhaseAView.swift          HARNESS SEMENTARA (dihapus di Fase B)
+Features/Chat/
+  ChatView.swift / ChatViewModel.swift / MessageBubble.swift / ComposerBar.swift
 Core/
   LlamaEngine.swift         actor; semua pointer C hidup di sini
   LlamaEngine+Generation.swift  prefill -> decode loop, UTF-8 incremental
@@ -224,7 +226,13 @@ berjalan tetap harus dihentikan lewat cancellation Task-nya.
 
 ## Peta fase
 
-- **Fase A (ini):** proyek + xcframework + `LlamaEngine` + harness.
+- **Fase A (selesai):** proyek + xcframework + `LlamaEngine` + harness.
+  Harness dihapus di Fase B; engine-nya tidak berubah kecuali dua
+  perbaikan compile dari log CI run #1.
+- **Fase B (ini):** ChatView + streaming (throttle ~20 fps) + stop +
+  system prompt (UserDefaults, berlaku untuk jawaban berikutnya).
+  Multi-turn = render ulang seluruh riwayat tiap giliran, karena engine
+  mengosongkan KV cache setiap generation selesai.
 - **Fase B:** ChatView + streaming + stop + system prompt (UserDefaults).
 - **Fase C:** Settings, template picker, Model Manager (background
   download, import Files, hapus, ukuran).
