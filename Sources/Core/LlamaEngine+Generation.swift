@@ -247,11 +247,10 @@ extension LlamaEngine {
     /// Isi batch yang dialokasikan `llama_batch_init`.
     ///
     /// VERIFY AGAINST GENERATED INTERFACE: pengisian lewat subscript
-    /// (`batch.token[i]`, `batch.pos[i]`, `batch.seq_id[i][0]`) adalah
-    /// pola dari contoh Swift llama.cpp; kalau impor C di toolchain CI
-    /// mengekspos field-field ini dengan spelling berbeda, error compile
-    /// di baris ini yang akan menunjukkannya — jangan ubah logika decode
-    /// sebelum membaca error tersebut.
+    /// Pengisian batch terverifikasi terhadap CI run #1 (22:22 WIT):
+    /// `batch.token[i]` / `batch.pos[i]` / `batch.logits[i]` langsung,
+    /// tetapi `batch.seq_id[i]` adalah pointer opsional dan harus
+    /// di-unwrap eksplisit (lihat di dalam loop).
     private func fillBatch(
         _ batch: inout llama_batch,
         tokens: [llama_token],
@@ -263,7 +262,13 @@ extension LlamaEngine {
             batch.token[index] = tokens[index]
             batch.pos[index] = startPos + Int32(index)
             batch.n_seq_id[index] = 1
-            batch.seq_id[index][0] = 0
+            // CI 22:22 WIT, run #1: `batch.seq_id[index]` bertipe
+            // `UnsafeMutablePointer<llama_seq_id>?` (opsional) — unwrap
+            // eksplisit; `llama_batch_init` selalu mengalokasikan
+            // array seq_id per token, jadi nil tidak diharapkan.
+            if let seqIds = batch.seq_id[index] {
+                seqIds[0] = 0
+            }
             let isLast = index == tokens.count - 1
             batch.logits[index] = (logitsLastOnly && isLast) ? 1 : 0
         }
