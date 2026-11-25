@@ -237,7 +237,7 @@ public enum MarkdownParser {
         // Pipe di ujung menghasilkan sel kosong pertama/terakhir.
         if cells.first?.isEmpty == true { cells.removeFirst() }
         if cells.last?.isEmpty == true { cells.removeLast() }
-        return cells.map(String.init)
+        return cells.map { String($0) }
     }
 
     private static func parseAlignments(_ separatorLine: String) -> [TableAlignment] {
