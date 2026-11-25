@@ -234,7 +234,14 @@ public final class ChatViewModel: ObservableObject {
 
             // Render seluruh riwayat (tanpa wadah kosong) + system prompt.
             // Template .auto diselesaikan dari metadata model ter-load.
+            // Blok <think> dibuang dari riwayat: penalaran giliran lama
+            // tidak boleh memakan konteks giliran berikutnya, dan tidak
+            // boleh dikirim kembali ke model. Pesan asisten yang isinya
+            // hanya think (generation terpotong di tengah berpikir)
+            // dibuang dari riwayat karena tidak membawa jawaban apa pun.
             let history = messages.filter { $0.id != assistantId }
+                .map { ChatMessage(id: $0.id, role: $0.role, content: ThinkBlock.stripped($0.content)) }
+                .filter { !($0.role == .assistant && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             let prompt = ChatTemplate.render(
                 kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
                 systemPrompt: systemPrompt,
