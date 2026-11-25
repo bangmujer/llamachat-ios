@@ -20,8 +20,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @State private var draftText = ""
     @State private var showingPicker = false
-    @State private var showingSystemPrompt = false
-    @State private var systemPromptDraft = ""
+    @State private var showingSettings = false
 
     init(engine: LlamaEngine) {
         self.engine = engine
@@ -94,12 +93,11 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    systemPromptDraft = viewModel.systemPrompt
-                    showingSystemPrompt = true
+                    showingSettings = true
                 } label: {
-                    Image(systemName: "slider.horizontal.3")
+                    Image(systemName: "gearshape")
                 }
-                .accessibilityLabel("System prompt")
+                .accessibilityLabel("Pengaturan")
             }
         }
         .fileImporter(
@@ -109,8 +107,8 @@ struct ChatView: View {
         ) { result in
             viewModel.importPickedModel(result: result)
         }
-        .sheet(isPresented: $showingSystemPrompt) {
-            systemPromptSheet
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(viewModel: viewModel)
         }
         .task {
             await viewModel.loadModelIfNeeded()
@@ -189,39 +187,6 @@ struct ChatView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 24)
-    }
-
-    private var systemPromptSheet: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("System prompt dipakai untuk jawaban berikutnya. Perubahan tersimpan dan langsung berlaku — tidak perlu load ulang model.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $systemPromptDraft)
-                    .font(.body)
-                    .padding(8)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("System Prompt")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Batal") {
-                        showingSystemPrompt = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Simpan") {
-                        viewModel.setSystemPrompt(systemPromptDraft)
-                        showingSystemPrompt = false
-                    }
-                    .disabled(systemPromptDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
     }
 
     private var ggufType: UTType {
