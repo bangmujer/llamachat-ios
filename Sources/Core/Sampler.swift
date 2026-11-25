@@ -23,7 +23,12 @@ public struct SamplingParameters: Equatable, Codable, Sendable {
         topK: Int32 = 40,
         repeatPenalty: Float = 1.1,
         penaltyLastN: Int32 = 64,
-        maxTokens: Int = 256,
+        // Default 1024 (sebelumnya 256): jawaban Qwen3 terpotong di
+        // tengah kalimat pada 256 karena blok <think> ikut memakan
+        // budget token. Pengguna tetap bisa mengubah per-model di
+        // Settings; batas kerasnya tetap n_ctx, dan tombol Stop selalu
+        // tersedia kalau jawaban dirasa kepanjangan.
+        maxTokens: Int = 1024,
         nCtx: Int = 2048
     ) {
         self.temperature = temperature
