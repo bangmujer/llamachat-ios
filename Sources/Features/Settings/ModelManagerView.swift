@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Model Manager Fase C + Katalog: daftar model di perangkat, hapus,
@@ -140,7 +141,7 @@ public struct ModelManagerView: View {
                 }
 
                 Section {
-                    Text("Build ini: ikon model dari server + Live Activity download di Dynamic Island + Jeda memakai resume per byte; tombol Batal meminta konfirmasi dulu.")
+                    Text("Build ini: diagnosis kecepatan per segmen + ikon model dari server + Live Activity download di Dynamic Island + Jeda memakai resume per byte; tombol Batal meminta konfirmasi dulu.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("Live Activity: \(downloader.liveActivityStatus)")
@@ -301,6 +302,10 @@ public struct ModelManagerView: View {
                 Text(detailText(for: item))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if item.state == .downloading,
+                   let rows = downloader.segmentDiagnostics[item.id], !rows.isEmpty {
+                    DiagnosisGroup(item: item, rows: rows, connections: connections)
+                }
             case .verifying:
                 HStack {
                     ProgressView()
@@ -474,6 +479,74 @@ private struct ModelIconView: View {
 /// terlihat segmen-segmen memang terisi bersamaan — angka
 /// "segmen X/Y" hanya naik kalau satu segmen penuh selesai, yang
 /// dengan segmen ~125 MB terlihat macet berlama-lama.
+/// Panel diagnosis kecepatan per segmen (sementara, sampai penyebab
+/// selisih agregat dengan MDM ketemu): kecepatan tiap segmen, protokol
+/// HTTP yang ternegosiasi, status HTTP, TTFB, dan hitungan retry/error,
+/// plus tombol salin laporan untuk dikirim ke pengembang.
+private struct DiagnosisGroup: View {
+    let item: ModelDownloadManager.DownloadItem
+    let rows: [ModelDownloadManager.SegmentDiagnostic]
+    let connections: Int
+
+    var body: some View {
+        DisclosureGroup("Diagnosis segmen (sementara)") {
+            ForEach(rows) { row in
+                SegmentDiagnosticRow(row: row)
+            }
+            Button("Salin laporan diagnosis") {
+                UIPasteboard.general.string = reportText
+            }
+            .buttonStyle(.bordered)
+        }
+        .font(.footnote)
+    }
+
+    private var reportText: String {
+        var lines: [String] = []
+        lines.append("Laporan diagnosis download LlamaChat")
+        lines.append("File: \(item.fileName)")
+        let total = item.totalBytes > 0
+            ? ByteCountFormatter.string(fromByteCount: item.totalBytes, countStyle: .file)
+            : "-"
+        lines.append("Koneksi: \(connections) | Total: \(speedText(item.speedBytesPerSec)) | Diterima: \(ByteCountFormatter.string(fromByteCount: item.receivedBytes, countStyle: .file))/\(total)")
+        for row in rows {
+            lines.append("Segmen \(row.id): \(row.isCompleted ? "selesai" : (row.isRunning ? "jalan" : "menunggu")), \(ByteCountFormatter.string(fromByteCount: row.receivedBytes, countStyle: .file))/\(ByteCountFormatter.string(fromByteCount: row.expectedBytes, countStyle: .file)), \(speedText(row.speedBytesPerSec)), \(row.networkProtocol ?? "-"), HTTP \(row.statusCode.map { String($0) } ?? "-"), TTFB \(row.timeToFirstByteMs.map { "\($0) ms" } ?? "-"), retry \(row.retryCount), error \(row.errorCount)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func speedText(_ bytesPerSec: Double) -> String {
+        guard bytesPerSec > 0 else { return "0 KB/dtk" }
+        return "\(ByteCountFormatter.string(fromByteCount: Int64(bytesPerSec), countStyle: .file))/dtk"
+    }
+}
+
+private struct SegmentDiagnosticRow: View {
+    let row: ModelDownloadManager.SegmentDiagnostic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("#\(row.id)")
+                    .frame(width: 30, alignment: .leading)
+                Text(row.isCompleted ? "selesai" : (row.isRunning ? "jalan" : "tunggu"))
+                    .frame(width: 52, alignment: .leading)
+                Text("\(ByteCountFormatter.string(fromByteCount: row.receivedBytes, countStyle: .file))/\(ByteCountFormatter.string(fromByteCount: row.expectedBytes, countStyle: .file))")
+                Spacer()
+                Text(row.speedBytesPerSec > 0 ? "\(ByteCountFormatter.string(fromByteCount: Int64(row.speedBytesPerSec), countStyle: .file))/dtk" : "0 KB/dtk")
+            }
+            HStack {
+                Text("protokol: \(row.networkProtocol ?? "-")")
+                Text("HTTP \(row.statusCode.map { String($0) } ?? "-")")
+                Text("TTFB \(row.timeToFirstByteMs.map { "\($0) ms" } ?? "-")")
+                Text("retry \(row.retryCount) · error \(row.errorCount)")
+            }
+            .foregroundStyle(.secondary)
+        }
+        .font(.caption.monospaced())
+    }
+}
+
 private struct SegmentStripView: View {
     let fractions: [Double]
 
