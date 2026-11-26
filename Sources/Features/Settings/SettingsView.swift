@@ -166,12 +166,22 @@ public struct SettingsView: View {
                         Text("Top-p: \(topP, specifier: "%.2f")")
                         Slider(value: $topP, in: 0...1, step: 0.05)
                     }
-                    Stepper("Top-k: \(topK)", value: $topK, in: 0...100, step: 5)
+                    Picker("Top-k", selection: $topK) {
+                        ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
+                            Text("\(value)").tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
                     VStack(alignment: .leading) {
                         Text("Repeat penalty: \(repeatPenalty, specifier: "%.2f")")
                         Slider(value: $repeatPenalty, in: 1...2, step: 0.05)
                     }
-                    Stepper("Max tokens: \(maxTokens)", value: $maxTokens, in: 64...2048, step: 64)
+                    Picker("Max tokens", selection: $maxTokens) {
+                        ForEach(Array(stride(from: 64, through: 2048, by: 64)), id: \.self) { value in
+                            Text("\(value)").tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
                     Picker("Konteks (n_ctx)", selection: $nCtx) {
                         ForEach(nCtxOptions, id: \.self) { value in
                             Text("\(value)").tag(value)
