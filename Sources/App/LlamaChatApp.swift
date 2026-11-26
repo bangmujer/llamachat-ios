@@ -12,14 +12,11 @@ import UIKit
 ///   (mis. database korup), dipakai container in-memory supaya app
 ///   tetap jalan tanpa riwayat tersimpan — kegagalan itu tidak boleh
 ///   membuat app tidak bisa dibuka sama sekali.
-/// - Satu-satunya network call adalah download model lewat background
-///   URLSession di `ModelDownloadManager`, yang hanya jalan dari
-///   Model Manager atas inisiatif pengguna. `AppDelegate` di bawah
-///   meneruskan completion handler background session sistem ke
-///   manager itu.
+/// - Satu-satunya network call adalah download model lewat sesi
+///   foreground di `ModelDownloadManager`, yang hanya jalan dari
+///   Model Manager atas inisiatif pengguna.
 @main
 struct LlamaChatApp: App {
-    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
 
     // Actor disimpan sebagai properti `let` di App. Semua method-nya
@@ -73,18 +70,5 @@ struct LlamaChatApp: App {
                 }
             }
         }
-    }
-}
-
-/// Satu-satunya tugas AppDelegate: meneruskan completion handler
-/// background URLSession dari sistem ke `ModelDownloadManager`, supaya
-/// iOS tahu kapan event background download selesai diproses.
-final class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(
-        _ application: UIApplication,
-        handleEventsForBackgroundURLSession identifier: String,
-        completionHandler: @escaping () -> Void
-    ) {
-        ModelDownloadManager.shared.setBackgroundCompletionHandler(completionHandler, for: identifier)
     }
 }
