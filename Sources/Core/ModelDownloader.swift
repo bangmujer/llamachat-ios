@@ -87,7 +87,31 @@ public final class ModelDownloadManager: ObservableObject {
         public var errorMessage: String?
     }
 
+    /// Satu baris diagnosis kecepatan per segmen (panel diagnosis
+    /// sementara di Model Manager): kecepatan tiap segmen, protokol
+    /// HTTP yang benar-benar ternegosiasi (h2 / http/1.1), status
+    /// HTTP, TTFB, dan hitungan retry/error. Dipakai untuk mencari
+    /// tahu kenapa agregatnya kalah dari MDM pada kondisi yang sama.
+    public struct SegmentDiagnostic: Identifiable, Equatable, Sendable {
+        public let id: Int
+        public let isRunning: Bool
+        public let isCompleted: Bool
+        public let receivedBytes: Int64
+        public let expectedBytes: Int64
+        public let speedBytesPerSec: Double
+        public let statusCode: Int?
+        public let networkProtocol: String?
+        public let timeToFirstByteMs: Int?
+        public let retryCount: Int
+        public let errorCount: Int
+    }
+
     @Published public private(set) var downloads: [DownloadItem] = []
+
+    /// Diagnosis per segmen, kunci: id download. Diperbarui bersama
+    /// `downloads` di `publish()`; hanya berisi download yang sedang
+    /// berjalan, memeriksa, atau terjeda.
+    @Published public private(set) var segmentDiagnostics: [UUID: [SegmentDiagnostic]] = []
 
     /// Status Live Activity untuk diagnosis di UI (Model Manager):
     /// "Aktif", "Nonaktif", atau "Gagal: <pesan sistem>". Kegagalan
@@ -138,6 +162,14 @@ public final class ModelDownloadManager: ObservableObject {
         /// sebelum seluruh download dinyatakan gagal. Byte yang sudah
         /// tersimpan tidak pernah diunduh ulang.
         var retryCounts: [Int: Int] = [:]
+        /// Laporan upaya terakhir per segmen (kunci: indeks segmen).
+        var reports: [Int: SegmentAttemptReport] = [:]
+        /// Jumlah kegagalan per segmen pada run ini.
+        var errorCounts: [Int: Int] = [:]
+        /// Sampel byte/waktu per segmen untuk kecepatan diagnosis
+        /// (jendela >= 1 detik) dan kecepatan terakhir per segmen.
+        var diagSamples: [Int: (bytes: Int64, at: Date)] = [:]
+        var diagSpeeds: [Int: Double] = [:]
         /// Lanjutkan diminta selagi worker lama belum selesai
         /// melapor (mis. tepat setelah Jeda): dijalankan begitu
         /// semua worker sudah settle.
@@ -485,6 +517,10 @@ public final class ModelDownloadManager: ObservableObject {
         guard var runtime = runtimes[id], var record = records[id] else { return }
         runtime.state = .downloading
         runtime.retryCounts.removeAll()
+        runtime.reports.removeAll()
+        runtime.errorCounts.removeAll()
+        runtime.diagSamples.removeAll()
+        runtime.diagSpeeds.removeAll()
         var changed = false
         for (index, segment) in record.segments.enumerated() where !segment.completed {
             guard runtime.workers[index] == nil else { continue }
@@ -560,6 +596,12 @@ public final class ModelDownloadManager: ObservableObject {
     /// menimpa byte yang belum tercatat.
     private func segmentFinished(id: UUID, index: Int, outcome: SegmentWorker.Outcome) {
         guard var runtime = runtimes[id], var record = records[id] else { return }
+        // Simpan laporan upaya worker yang baru selesai (protokol
+        // HTTP, status, TTFB) untuk diagnosis — sebelum worker
+        // dihapus dari peta.
+        if let report = runtime.workers[index]?.lastAttemptReport {
+            runtime.reports[index] = report
+        }
         // Hapus worker dari peta DULU, sebelum guard indeks: setelah
         // konversi file utuh, completion worker lama (indeks yang
         // sudah tidak ada) tetap harus settle, kalau tidak peta
@@ -604,6 +646,7 @@ public final class ModelDownloadManager: ObservableObject {
             }
             publish()
         case .failed(let error):
+            runtime.errorCounts[index, default: 0] += 1
             if runtime.state == .downloading {
                 runtimes[id] = runtime
                 attemptRetryOrFail(
@@ -905,8 +948,53 @@ public final class ModelDownloadManager: ObservableObject {
                 errorMessage: runtime.errorMessage
             ))
         }
+        // Diagnosis per segmen: kecepatan tiap segmen dari jendela
+        // sampel >= 1 detik (byte tersimpan di workQueue, bukan dari
+        // worker — supaya tidak ada baca lintas antrean).
+        var diagnostics: [UUID: [SegmentDiagnostic]] = [:]
+        for id in order {
+            guard let record = records[id], var runtime = runtimes[id] else { continue }
+            guard runtime.state == .downloading || runtime.state == .verifying || runtime.state == .paused else { continue }
+            var rows: [SegmentDiagnostic] = []
+            for (index, segment) in record.segments.enumerated() {
+                let length = Self.segmentLength(segment, totalBytes: record.totalBytes)
+                let received = segment.completed ? length : segment.received
+                var speed = runtime.diagSpeeds[index] ?? 0
+                if runtime.state == .downloading {
+                    if let sample = runtime.diagSamples[index] {
+                        let elapsed = now.timeIntervalSince(sample.at)
+                        if elapsed >= 1.0 {
+                            speed = elapsed > 0 ? Double(received - sample.bytes) / elapsed : 0
+                            runtime.diagSpeeds[index] = speed
+                            runtime.diagSamples[index] = (received, now)
+                        }
+                    } else {
+                        runtime.diagSamples[index] = (received, now)
+                    }
+                } else {
+                    speed = 0
+                }
+                let report = runtime.reports[index]
+                rows.append(SegmentDiagnostic(
+                    id: index,
+                    isRunning: runtime.workers[index] != nil,
+                    isCompleted: segment.completed,
+                    receivedBytes: received,
+                    expectedBytes: length,
+                    speedBytesPerSec: max(0, speed),
+                    statusCode: report?.statusCode,
+                    networkProtocol: report?.networkProtocol,
+                    timeToFirstByteMs: report?.timeToFirstByteMs,
+                    retryCount: runtime.retryCounts[index, default: 0],
+                    errorCount: runtime.errorCounts[index, default: 0]
+                ))
+            }
+            runtimes[id] = runtime
+            diagnostics[id] = rows
+        }
         lastPublishAt = now
         let snapshot = items
+        let diagnosticsSnapshot = diagnostics
         syncLiveActivity(with: snapshot)
         // Assertion background selagi ada download aktif: memberi
         // waktu ekstra saat app baru pindah ke background, sebelum
@@ -922,8 +1010,12 @@ public final class ModelDownloadManager: ObservableObject {
         }
         if Thread.isMainThread {
             downloads = snapshot
+            segmentDiagnostics = diagnosticsSnapshot
         } else {
-            DispatchQueue.main.async { self.downloads = snapshot }
+            DispatchQueue.main.async {
+                self.downloads = snapshot
+                self.segmentDiagnostics = diagnosticsSnapshot
+            }
         }
     }
 
@@ -1061,6 +1153,16 @@ public final class ModelDownloadManager: ObservableObject {
 /// dibuat; `Range` diminta dari byte itu. File part direkonsiliasi
 /// saat `start()`: ekor byte yang tidak tercatat dipotong supaya
 /// isi file dan hitungan selalu cocok.
+/// Laporan satu upaya segmen (untuk diagnosis kecepatan): diisi worker
+/// saat selesai, dibaca manager di `segmentFinished`. Lingkup file
+/// supaya bisa dipakai `SegmentWorker` (di luar kelas manager) dan
+/// `Runtime` (di dalam kelas manager).
+private struct SegmentAttemptReport {
+    var statusCode: Int?
+    var networkProtocol: String?
+    var timeToFirstByteMs: Int?
+}
+
 private final class SegmentWorker: NSObject, URLSessionDataDelegate {
 
     enum Outcome {
@@ -1090,6 +1192,14 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
     private var responseError: Error?
     private var sawRangeIgnored = false
     private var finished = false
+    /// Diagnosis upaya ini: status HTTP, kapan mulai, kapan byte
+    /// pertama tiba, dan metrik transaksi terakhir (protokol yang
+    /// ternegosiasi + TTFB). Dibaca manager saat worker selesai.
+    private var statusCode: Int?
+    private var startedAt: Date?
+    private var firstDataAt: Date?
+    private var pendingMetrics: URLSessionTaskTransactionMetrics?
+    var lastAttemptReport: SegmentAttemptReport?
 
     init(url: URL, partURL: URL, startingReceived: Int64, range: (start: Int64, end: Int64)?) {
         self.url = url
@@ -1126,6 +1236,7 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
         }
         let task = session.dataTask(with: request)
         self.task = task
+        startedAt = Date()
         task.resume()
         return true
     }
@@ -1159,6 +1270,22 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
     private func finish(with outcome: Outcome) {
         guard !finished else { return }
         finished = true
+        // Bekukan laporan diagnosis upaya ini sebelum task/sesi
+        // dilepas: protokol + TTFB dari metrik transaksi, fallback
+        // ke selisih byte-pertama vs mulai bila metrik tak ada.
+        var timeToFirstByteMs: Int?
+        if let metrics = pendingMetrics,
+           let fetchStart = metrics.fetchStartDate,
+           let responseStart = metrics.responseStartDate {
+            timeToFirstByteMs = Int(responseStart.timeIntervalSince(fetchStart) * 1000)
+        } else if let startedAt, let firstDataAt {
+            timeToFirstByteMs = Int(firstDataAt.timeIntervalSince(startedAt) * 1000)
+        }
+        lastAttemptReport = SegmentAttemptReport(
+            statusCode: statusCode,
+            networkProtocol: pendingMetrics?.networkProtocolName,
+            timeToFirstByteMs: timeToFirstByteMs
+        )
         if let handle {
             try? handle.close()
             self.handle = nil
@@ -1187,6 +1314,7 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
             completionHandler(.cancel)
             return
         }
+        statusCode = http.statusCode
         if range != nil {
             if http.statusCode == 200 {
                 // Server mengabaikan Range: laporkan supaya manager
@@ -1219,6 +1347,7 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard !data.isEmpty, let handle else { return }
+        if firstDataAt == nil { firstDataAt = Date() }
         do {
             try handle.write(contentsOf: data)
         } catch {
@@ -1231,6 +1360,7 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        pendingMetrics = task.transactionMetrics.last
         if sawRangeIgnored {
             finish(with: .rangeIgnored)
             return
