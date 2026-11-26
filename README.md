@@ -27,12 +27,13 @@ terkurasi (15 model, lengkap dengan keterangan kegunaan) dan
 downloader segmen paralel ala download manager (koneksi 1–60, maks 2
 file bersamaan, tahan jeda/gagal, retry otomatis 3x per segmen yang
 error, strip progres per segmen, resume per byte: Jeda tidak
-menghilangkan byte yang sudah diterima). Download dan chat berjalan
-di latar belakang (background URLSession + assertion generation,
-notifikasi lokal saat selesai di background). Download yang sedang
-berjalan tampil sebagai Live Activity di Dynamic Island + Lock Screen
-(widget extension; butuh tes on-device di install unsigned/TrollStore).
-Redesign UI/UX menyeluruh belum
+menghilangkan byte yang sudah diterima; sesi foreground secepat MDM,
+jeda-otomatis di background + lanjut-otomatis di foreground).
+Download dan chat berjalan di latar belakang (assertion generation +
+download, notifikasi lokal saat selesai di background). Download yang
+sedang berjalan tampil sebagai Live Activity di Dynamic Island + Lock
+Screen (widget extension; butuh tes on-device di install
+unsigned/TrollStore). Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
 fase" di bawah.
 
