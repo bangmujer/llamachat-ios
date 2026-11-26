@@ -74,6 +74,12 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
 
     @Published public private(set) var downloads: [DownloadItem] = []
 
+    /// Status Live Activity untuk diagnosis di UI (Model Manager):
+    /// "Aktif", "Nonaktif", atau "Gagal: <pesan sistem>". Kegagalan
+    /// request ditelan di jalur download, tapi ditampilkan di sini
+    /// supaya penyebab Dynamic Island tidak muncul bisa dibaca.
+    @Published public private(set) var liveActivityStatus: String = "Nonaktif"
+
     /// Dipanggil di main thread setelah satu download selesai dan file
     /// sudah terverifikasi di Models/. Dipakai Model Manager untuk
     /// me-refresh daftar model.
@@ -986,6 +992,7 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
                 where: { $0.attributes.downloadID == featured.id }
             ) {
                 liveActivity = existing
+                setLiveActivityStatus("Aktif (dipulihkan)")
             }
         }
         // Jangan membangkitkan Live Activity untuk download yang
@@ -1034,7 +1041,10 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         for item: DownloadItem,
         state: DownloadActivityAttributes.ContentState
     ) {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            setLiveActivityStatus("Nonaktif: Live Activity dimatikan di Pengaturan")
+            return
+        }
         do {
             let activity = try Activity.request(
                 attributes: DownloadActivityAttributes(downloadID: item.id),
@@ -1045,8 +1055,10 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
             lastLiveActivityUpdate = Date()
             lastLiveActivityProgress = item.progress
             lastLiveActivityState = item.state
+            setLiveActivityStatus("Aktif")
         } catch {
             // Live Activity tidak tersedia: download tetap jalan normal.
+            setLiveActivityStatus("Gagal: \(error.localizedDescription)")
         }
     }
 
@@ -1055,7 +1067,16 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         liveActivity = nil
         lastLiveActivityProgress = -1
         lastLiveActivityState = nil
+        setLiveActivityStatus("Nonaktif")
         Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    }
+
+    private func setLiveActivityStatus(_ text: String) {
+        if Thread.isMainThread {
+            liveActivityStatus = text
+        } else {
+            DispatchQueue.main.async { self.liveActivityStatus = text }
+        }
     }
 }
 
