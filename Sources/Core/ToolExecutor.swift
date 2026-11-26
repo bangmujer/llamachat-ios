@@ -288,7 +288,9 @@ public final class ToolExecutor {
         if let results = await wikipediaSearch(query: trimmed, limit: limit), !results.isEmpty {
             return truncate(formatWebResults(results, query: trimmed))
         }
-        return "Pencarian internet tidak menemukan hasil untuk '\(trimmed)', atau mesin pencari sedang tidak bisa dijangkau. Coba kata kunci lain."
+        var tried = ["DuckDuckGo", "Wikipedia"]
+        if WebSearchSettings.isGoogleConfigured { tried.insert("Google", at: 0) }
+        return "Pencarian internet tidak menemukan hasil untuk '\(trimmed)' (sudah mencoba: \(tried.joined(separator: ", "))). Kemungkinan mesin pencari menolak permintaan dari app atau sedang tidak bisa dijangkau. Coba kata kunci lain, atau periksa kembali API key dan Search Engine ID Google di Settings bila Google terkonfigurasi."
     }
 
     private func formatWebResults(_ results: [WebResult], query: String) -> String {
@@ -336,8 +338,26 @@ public final class ToolExecutor {
         }
     }
 
+    /// DuckDuckGo tanpa API key: dua endpoint + tiga pola markup.
+    ///
+    /// Endpoint HTML dan Lite kadang memblokir permintaan atau
+    /// mengubah markup; parser mencoba pola `result__a` (klasik),
+    /// lalu tautan redirect `uddg=` generik, lalu pola Lite
+    /// (`result-link`). Kalau semuanya kosong, kembalikan nil supaya
+    /// fallback Wikipedia yang mencoba.
     private func duckDuckGoSearch(query: String, limit: Int) async -> [WebResult]? {
-        var components = URLComponents(string: "https://html.duckduckgo.com/html/")
+        for endpoint in ["https://html.duckduckgo.com/html/",
+                         "https://lite.duckduckgo.com/lite/"] {
+            if let results = await fetchDuckDuckGo(endpoint: endpoint, query: query, limit: limit),
+               !results.isEmpty {
+                return results
+            }
+        }
+        return nil
+    }
+
+    private func fetchDuckDuckGo(endpoint: String, query: String, limit: Int) async -> [WebResult]? {
+        var components = URLComponents(string: endpoint)
         components?.queryItems = [URLQueryItem(name: "q", value: query)]
         guard let url = components?.url else { return nil }
         var request = URLRequest(url: url)
@@ -348,15 +368,41 @@ public final class ToolExecutor {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let html = String(data: data, encoding: .utf8) else { return nil }
-            return parseDuckDuckGo(html: html, limit: limit)
+            let results = parseDuckDuckGo(html: html, limit: limit)
+            return results.isEmpty ? nil : results
         } catch {
             return nil
         }
     }
 
     private func parseDuckDuckGo(html: String, limit: Int) -> [WebResult] {
-        let linkPattern = #"<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#
-        let snippetPattern = #"<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#
+        // Pola 1: markup klasik result__a + result__snippet.
+        let classic = matches(
+            in: html,
+            linkPattern: #"<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+            snippetPattern: #"<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#,
+            limit: limit
+        )
+        if !classic.isEmpty { return classic }
+        // Pola 2: tautan redirect uddg= apa pun class-nya.
+        let redirect = matches(
+            in: html,
+            linkPattern: #"<a[^>]*href="([^"]*uddg=[^"]*)"[^>]*>(.*?)</a>"#,
+            snippetPattern: #"<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#,
+            limit: limit
+        )
+        if !redirect.isEmpty { return redirect }
+        // Pola 3: halaman Lite (result-link + result-snippet).
+        return matches(
+            in: html,
+            linkPattern: #"<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+            snippetPattern: #"<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#,
+            limit: limit
+        )
+    }
+
+    /// Pasangkan tautan hasil dengan cuplikan berdasarkan urutan.
+    private func matches(in html: String, linkPattern: String, snippetPattern: String, limit: Int) -> [WebResult] {
         guard let linkRegex = try? NSRegularExpression(pattern: linkPattern, options: [.dotMatchesLineSeparators, .caseInsensitive]),
               let snippetRegex = try? NSRegularExpression(pattern: snippetPattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
         else { return [] }
