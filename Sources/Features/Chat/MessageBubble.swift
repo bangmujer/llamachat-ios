@@ -23,6 +23,9 @@ struct MessageBubble: View {
     /// Lipat/buka pesan panjang (tombol "Lihat selengkapnya").
     /// Per bubble, keyed oleh identitas view dari `ForEach` + `.id`.
     @State private var expanded = false
+    /// Pembaca TTS bersama (Build 2): tombol speaker di bawah jawaban
+    /// asisten membacakan/menghentikan pembacaan jawaban ini.
+    @ObservedObject private var speechReader = SpeechReader.shared
 
     var body: some View {
         HStack {
@@ -34,6 +37,10 @@ struct MessageBubble: View {
                 Text(message.role == .user ? "Kamu" : "Asisten")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if !message.attachments.isEmpty {
+                    MessageAttachmentsView(attachments: message.attachments)
+                }
 
                 if message.role == .assistant {
                     assistantContent
@@ -105,6 +112,12 @@ struct MessageBubble: View {
                         expandButton
                     }
                 }
+                // Tombol dengarkan (Build 2): bacakan jawaban dengan
+                // TTS. Hanya setelah generation selesai, supaya yang
+                // dibacakan adalah jawaban utuh.
+                if !isStreaming, !parts.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    listenButton(answer: parts.answer)
+                }
             } else if isStreaming {
                 // Masih di dalam blok think dan jawaban belum mulai:
                 // jangan tampilkan bubble kosong, label "Berpikir…"
@@ -126,6 +139,24 @@ struct MessageBubble: View {
             Haptics.light()
         }
         .font(.footnote)
+    }
+
+    /// Tombol speaker (Build 2): ketuk untuk membacakan jawaban,
+    /// ketuk lagi untuk berhenti. Menunjukkan state aktif kalau pesan
+    /// ini yang sedang dibacakan.
+    private func listenButton(answer: String) -> some View {
+        let isSpeakingThis = speechReader.isSpeaking && speechReader.speakingMessageID == message.id
+        return Button {
+            speechReader.toggle(answer, messageID: message.id)
+        } label: {
+            Label(
+                isSpeakingThis ? "Berhenti" : "Dengarkan",
+                systemImage: isSpeakingThis ? "stop.circle" : "speaker.wave.2"
+            )
+            .font(.footnote)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
     }
 
     /// Potong teks ke ambang lipat di batas kata/baris terdekat, tambah
