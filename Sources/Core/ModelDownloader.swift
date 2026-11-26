@@ -559,7 +559,7 @@ public final class ModelDownloadManager: ObservableObject {
     /// serial), jadi penetapan absolut di sini tidak pernah
     /// menimpa byte yang belum tercatat.
     private func segmentFinished(id: UUID, index: Int, outcome: SegmentWorker.Outcome) {
-        guard var runtime = runtimes[id], let record = records[id] else { return }
+        guard var runtime = runtimes[id], var record = records[id] else { return }
         // Hapus worker dari peta DULU, sebelum guard indeks: setelah
         // konversi file utuh, completion worker lama (indeks yang
         // sudah tidak ada) tetap harus settle, kalau tidak peta
@@ -570,7 +570,6 @@ public final class ModelDownloadManager: ObservableObject {
             checkSettled(id: id)
             return
         }
-        var record = record
 
         switch outcome {
         case .cancelled:
