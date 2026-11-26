@@ -3,16 +3,19 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase 2 + Agent + Katalog Model.** Di atas Fase A–D: regenerate/edit/copy,
+**Status: Fase 2 + Agent + Katalog Model + Web Tools.** Di atas Fase A–D: regenerate/edit/copy,
 penghitung token + bar konteks, dark mode, haptik, Markdown blok
 (tabel, blok kode, lipat pesan panjang), dan agent tools (waktu, info
-perangkat, kalender, pengingat, kontak, Shortcut) dengan orkestrasi
-tool-call 2 langkah dan konfirmasi untuk tool tulis/eksternal. Model
-Manager punya katalog model terkurasi (9 model, lengkap dengan
-keterangan kegunaan) dan downloader segmen paralel ala download
-manager (koneksi 1–60, maks 2 file bersamaan, tahan jeda/gagal).
-Redesign UI/UX menyeluruh belum dikerjakan
-(terakhir, sesuai arahan pengguna). Lihat bagian "Peta fase" di bawah.
+perangkat, kalender, pengingat, kontak, Shortcut, cari di internet,
+buka halaman web) dengan orkestrasi tool-call 2 langkah dan
+konfirmasi untuk tool tulis/eksternal. Tool internet nonaktif secara
+default (query dikirim ke mesin pencari) dan memakai DuckDuckGo HTML +
+fallback Wikipedia tanpa API key. Model Manager punya katalog model
+terkurasi (9 model, lengkap dengan keterangan kegunaan) dan
+downloader segmen paralel ala download manager (koneksi 1–60, maks 2
+file bersamaan, tahan jeda/gagal). Redesign UI/UX menyeluruh belum
+dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
+fase" di bawah.
 
 ## Pin llama.cpp — baca ini dulu
 
