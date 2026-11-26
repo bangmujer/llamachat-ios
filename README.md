@@ -33,7 +33,10 @@ Download dan chat berjalan di latar belakang (assertion generation +
 download, notifikasi lokal saat selesai di background). Download yang
 sedang berjalan tampil sebagai Live Activity di Dynamic Island + Lock
 Screen (widget extension; butuh tes on-device di install
-unsigned/TrollStore). Redesign UI/UX menyeluruh belum
+unsigned/TrollStore). Setiap model di Model Manager memakai ikon
+avatar publisher-nya langsung dari server Hugging Face (endpoint
+`/api/avatars/…`; monogram huruf kalau avatar tidak bisa dimuat).
+Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
 fase" di bawah.
 
