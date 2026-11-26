@@ -20,6 +20,10 @@ public struct ModelManagerView: View {
     @State private var listError: String?
     @State private var showingImporter = false
     @State private var modelToDelete: ModelDescriptor?
+    /// Download yang menunggu konfirmasi Batal: tombol Batal menghapus
+    /// progres yang sudah tersimpan, jadi tidak boleh jalan dari satu
+    /// ketukan yang tak sengaja (Jeda dan Batal bersebelahan).
+    @State private var cancelTarget: ModelDownloadManager.DownloadItem?
     @State private var urlText = ""
     @State private var fileNameText = ""
     @State private var expectedSizeMBText = ""
@@ -130,6 +134,12 @@ public struct ModelManagerView: View {
                     }
                     .disabled(isWorking || models.isEmpty)
                 }
+
+                Section {
+                    Text("Build ini: Jeda memakai resume per byte (progres tidak hilang); tombol Batal meminta konfirmasi dulu.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("Model Manager")
             .navigationBarTitleDisplayMode(.inline)
@@ -174,6 +184,21 @@ public struct ModelManagerView: View {
                 Button("Batal", role: .cancel) {}
             } message: { descriptor in
                 Text("\(descriptor.fileName) (\(descriptor.displaySize)) akan dihapus dari perangkat.")
+            }
+            .alert(
+                "Batalkan download?",
+                isPresented: Binding(
+                    get: { cancelTarget != nil },
+                    set: { if !$0 { cancelTarget = nil } }
+                ),
+                presenting: cancelTarget
+            ) { item in
+                Button("Batalkan download", role: .destructive) {
+                    downloader.cancelDownload(id: item.id)
+                }
+                Button("Lanjutkan download", role: .cancel) {}
+            } message: { item in
+                Text("Progres \(item.fileName) yang sudah tersimpan akan dihapus dan harus diunduh ulang dari awal.")
             }
         }
     }
@@ -283,10 +308,10 @@ public struct ModelManagerView: View {
                 switch item.state {
                 case .downloading, .queued, .probing:
                     Button("Jeda") { downloader.pauseDownload(id: item.id) }
-                    Button("Batal", role: .destructive) { downloader.cancelDownload(id: item.id) }
+                    Button("Batal", role: .destructive) { cancelTarget = item }
                 case .paused, .failed:
                     Button("Lanjutkan") { downloader.resumeDownload(id: item.id) }
-                    Button("Batal", role: .destructive) { downloader.cancelDownload(id: item.id) }
+                    Button("Batal", role: .destructive) { cancelTarget = item }
                 case .verifying:
                     EmptyView()
                 case .finished:
