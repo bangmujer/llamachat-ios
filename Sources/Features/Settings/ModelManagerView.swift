@@ -136,7 +136,10 @@ public struct ModelManagerView: View {
                 }
 
                 Section {
-                    Text("Build ini: Jeda memakai resume per byte (progres tidak hilang); tombol Batal meminta konfirmasi dulu.")
+                    Text("Build ini: Live Activity download di Dynamic Island + Jeda memakai resume per byte; tombol Batal meminta konfirmasi dulu.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Live Activity: \(downloader.liveActivityStatus)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
