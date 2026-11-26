@@ -111,7 +111,7 @@ public final class ModelDownloadManager: ObservableObject {
     /// Diagnosis per segmen, kunci: id download. Diperbarui bersama
     /// `downloads` di `publish()`; hanya berisi download yang sedang
     /// berjalan, memeriksa, atau terjeda.
-    @Published public private(set) var segmentDiagnostics: [UUID: [SegmentDiagnostic]] = []
+    @Published public private(set) var segmentDiagnostics: [UUID: [SegmentDiagnostic]] = [:]
 
     /// Status Live Activity untuk diagnosis di UI (Model Manager):
     /// "Aktif", "Nonaktif", atau "Gagal: <pesan sistem>". Kegagalan
@@ -1194,11 +1194,20 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
     private var finished = false
     /// Diagnosis upaya ini: status HTTP, kapan mulai, kapan byte
     /// pertama tiba, dan metrik transaksi terakhir (protokol yang
-    /// ternegosiasi + TTFB). Dibaca manager saat worker selesai.
+    /// ternegosiasi + TTFB, dari `didFinishCollecting`). Dibaca
+    /// manager saat worker selesai.
     private var statusCode: Int?
     private var startedAt: Date?
     private var firstDataAt: Date?
     private var pendingMetrics: URLSessionTaskTransactionMetrics?
+    /// Outcome yang menunggu metrik tiba; metrik sudah tiba atau
+    /// timer fallback habis baru worker ditutup.
+    private var storedOutcome: Outcome?
+    private var sawMetrics = false
+    /// Antrean delegate sesi ini: timer fallback dijalankan lewat
+    /// antrean yang sama supaya penutupan worker tidak balapan
+    /// dengan callback delegate.
+    private var callbackQueue: OperationQueue?
     var lastAttemptReport: SegmentAttemptReport?
 
     init(url: URL, partURL: URL, startingReceived: Int64, range: (start: Int64, end: Int64)?) {
@@ -1225,7 +1234,9 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 0
         config.waitsForConnectivity = true
-        let session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue())
+        let delegateQueue = OperationQueue()
+        self.callbackQueue = delegateQueue
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
         self.session = session
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -1360,27 +1371,55 @@ private final class SegmentWorker: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        pendingMetrics = task.transactionMetrics.last
+        let outcome: Outcome
         if sawRangeIgnored {
-            finish(with: .rangeIgnored)
-            return
-        }
-        if let error {
+            outcome = .rangeIgnored
+        } else if let error {
             let nsError = error as NSError
             if nsError.code == NSURLErrorCancelled, responseError == nil {
-                finish(with: .cancelled)
+                outcome = .cancelled
             } else if let responseError {
-                finish(with: .failed(responseError))
+                outcome = .failed(responseError)
             } else {
-                finish(with: .failed(error))
+                outcome = .failed(error)
             }
-            return
+        } else if let responseError {
+            outcome = .failed(responseError)
+        } else {
+            outcome = .completed(received: received)
         }
-        if let responseError {
-            finish(with: .failed(responseError))
-            return
+        complete(with: outcome)
+    }
+
+    /// Metrik transaksi (protokol ternegosiasi + TTFB) tiba lewat
+    /// delegate ini, setelah `didCompleteWithError`. Simpan metrik
+    /// terakhir lalu tutup worker bila outcome sudah ada.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        pendingMetrics = metrics.transactionMetrics.last
+        sawMetrics = true
+        maybeFinish()
+    }
+
+    /// Simpan outcome, tutup begitu metrik tiba. Timer fallback 2
+    /// detik menutup worker bila metrik tidak kunjung tiba (hasil
+    /// tetap dilaporkan, tanpa protokol/TTFB dari metrik).
+    private func complete(with outcome: Outcome) {
+        storedOutcome = outcome
+        maybeFinish()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, let queue = self.callbackQueue else { return }
+            queue.addOperation { [weak self] in self?.finishAfterMetricsTimeout() }
         }
-        finish(with: .completed(received: received))
+    }
+
+    private func maybeFinish() {
+        guard !finished, sawMetrics, let outcome = storedOutcome else { return }
+        finish(with: outcome)
+    }
+
+    private func finishAfterMetricsTimeout() {
+        guard !finished, let outcome = storedOutcome else { return }
+        finish(with: outcome)
     }
 }
 
