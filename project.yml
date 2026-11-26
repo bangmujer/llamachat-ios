@@ -6,6 +6,14 @@ options:
   # Pola yang sama seperti proyek MDM: XcodeGen men-generate .xcodeproj di CI.
   # File .xcodeproj TIDAK di-commit; sumber kebenarannya adalah file ini.
   xcodeVersion: "16.0"
+# ZIPFoundation (Build 2, dukungan arsip ZIP): pola yang sama seperti
+# proyek MDM — paket SwiftPM yang di-resolve saat `xcodegen generate`
+# di CI. Dipakai HANYA untuk membaca entri ZIP ke memori (stored +
+# deflate); tidak ada ekstraksi ke disk selain file temp per entri.
+packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.19
 targets:
   LlamaChat:
     type: application
@@ -20,6 +28,8 @@ targets:
     dependencies:
       - framework: ThirdParty/llama.xcframework
         embed: true
+      - package: ZIPFoundation
+        product: ZIPFoundation
     # PELAJARAN dari proyek MDM (2026-11-23): XcodeGen MENIMPA Info.plist
     # di info.path pada setiap `xcodegen generate`. Kunci custom WAJIB di sini,
     # bukan hanya di file Info.plist tulisan tangan.
