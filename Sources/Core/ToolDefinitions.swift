@@ -65,7 +65,7 @@ public enum AgentTool: String, CaseIterable, Identifiable, Sendable {
     public var requiresConfirmation: Bool {
         switch self {
         case .createCalendarEvent, .createReminder, .runShortcut: return true
-        case .currentTime, .deviceInfo, .calendarEvents, .searchContacts: return false
+        case .currentTime, .deviceInfo, .calendarEvents, .searchContacts, .webSearch, .webFetch: return false
         }
     }
 
