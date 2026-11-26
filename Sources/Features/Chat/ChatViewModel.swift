@@ -327,10 +327,24 @@ public final class ChatViewModel: ObservableObject {
     /// Dipakai `send`, `regenerateLastAnswer`, dan `editUserMessage`.
     private func startReplyTurn() {
         generationTask = Task {
+            // Latar belakang: assertion sistem supaya decode tidak
+            // langsung dibekukan saat app pindah ke background; kalau
+            // waktunya habis, generation hanya ditangguhkan dan lanjut
+            // lagi di foreground (Task tidak dibatalkan).
+            let backgroundTask = BackgroundSupport.beginTask(named: "LlamaChat generation")
+            var finishedAnswer = false
             defer {
                 isGenerating = false
                 generationTask = nil
+                BackgroundSupport.endTask(backgroundTask)
+                if finishedAnswer, !Task.isCancelled {
+                    BackgroundSupport.notifyIfBackground(
+                        title: "LlamaChat",
+                        body: "Jawaban sudah selesai — buka app untuk membacanya."
+                    )
+                }
             }
+            BackgroundSupport.ensureNotificationAuthorization()
 
             // Load malas: pesan pertama juga memuat model kalau belum.
             if !(await engine.isLoaded) {
@@ -463,6 +477,7 @@ public final class ChatViewModel: ObservableObject {
                         flush(answer, to: assistantId)
                         statusText = "Selesai."
                         Haptics.success()
+                        finishedAnswer = true
                         persistCurrentConversation()
                         maybeSpeakAnswer(assistantId)
                         return
@@ -516,6 +531,7 @@ public final class ChatViewModel: ObservableObject {
             case .endOfTurn, .maxTokens:
                 statusText = "Selesai."
                 Haptics.success()
+                finishedAnswer = true
                 maybeSpeakAnswer(assistantId)
             case .contextOverflow:
                 removeMessageIfEmpty(assistantId)
