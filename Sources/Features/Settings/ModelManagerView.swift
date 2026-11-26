@@ -249,6 +249,9 @@ public struct ModelManagerView: View {
                 ProgressView(value: item.progress) {
                     Text(statusText(for: item))
                 }
+                if item.segmentCount > 1 {
+                    SegmentStripView(fractions: item.segmentFractions)
+                }
                 Text(detailText(for: item))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -310,6 +313,9 @@ public struct ModelManagerView: View {
         var text = "\(received) / \(total)"
         if item.segmentCount > 1 {
             text += " · segmen \(item.segmentsDone)/\(item.segmentCount)"
+            if item.state == .downloading, item.activeSegments > 0 {
+                text += " (\(item.activeSegments) berjalan)"
+            }
         }
         if item.speedBytesPerSec > 0 {
             text += " · \(ByteCountFormatter.string(fromByteCount: Int64(item.speedBytesPerSec), countStyle: .file))/dtk"
@@ -357,5 +363,33 @@ public struct ModelManagerView: View {
             }
             refresh()
         }
+    }
+}
+
+/// Strip progres per segmen: satu sel per segmen, terisi sesuai fraksi
+/// segmen itu (0 = kosong, 1 = selesai penuh). Tujuannya supaya
+/// terlihat segmen-segmen memang terisi bersamaan — angka
+/// "segmen X/Y" hanya naik kalau satu segmen penuh selesai, yang
+/// dengan segmen ~125 MB terlihat macet berlama-lama.
+private struct SegmentStripView: View {
+    let fractions: [Double]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(fractions.indices, id: \.self) { index in
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.secondary.opacity(0.25))
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor)
+                            .frame(width: geometry.size.width * max(0, min(1, fractions[index])))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: 6)
+            }
+        }
+        .frame(height: 6)
+        .accessibilityLabel("Progres per segmen")
     }
 }
