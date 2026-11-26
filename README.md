@@ -26,8 +26,10 @@ endpoint, tiga pola markup) + Wikipedia tanpa API key. Model Manager punya katal
 terkurasi (15 model, lengkap dengan keterangan kegunaan) dan
 downloader segmen paralel ala download manager (koneksi 1–60, maks 2
 file bersamaan, tahan jeda/gagal, retry otomatis 3x per segmen yang
-error, strip progres per segmen). Semua kontrol stepper diganti
-dropdown (koneksi per file, top-k, max tokens). Redesign UI/UX menyeluruh belum
+error, strip progres per segmen, resume per byte: Jeda tidak
+menghilangkan byte yang sudah diterima). Download dan chat berjalan
+di latar belakang (background URLSession + assertion generation,
+notifikasi lokal saat selesai di background). Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
 fase" di bawah.
 
