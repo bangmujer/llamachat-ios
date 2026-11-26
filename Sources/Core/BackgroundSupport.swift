@@ -9,9 +9,11 @@ import UserNotifications
 ///   sistem). Kalau waktu itu habis sebelum jawaban selesai, proses
 ///   hanya ditangguhkan dan generation dilanjutkan lagi begitu app
 ///   kembali ke foreground; Task-nya TIDAK dibatalkan.
-/// - Download: `ModelDownloadManager` memakai background `URLSession`,
-///   jadi transfer diteruskan sistem dan app dibangunkan untuk
-///   menerima byte-nya; tidak perlu assertion tambahan.
+/// - Download: `ModelDownloadManager` memakai sesi foreground
+///   (background `URLSession` di pacing sistem dan jauh lebih
+///   lambat). Assertion download dipegang selagi ada download aktif
+///   (`setDownloadsActive`), dan manager men-jeda otomatis saat app
+///   pindah ke background lalu lanjut otomatis saat kembali.
 /// - Notifikasi: kalau generation/download selesai selagi app di
 ///   background, notifikasi lokal dikirim — hanya bila pengguna
 ///   mengizinkan. Tanpa izin, semua tetap jalan, hanya tanpa
@@ -51,6 +53,33 @@ public enum BackgroundSupport {
         UIApplication.shared.endBackgroundTask(identifier)
     }
 
+    /// Assertion background untuk download: dipegang selagi ada
+    /// download aktif, dilepas saat tidak ada. Idempotent — panggilan
+    /// berulang dengan nilai yang sama tidak melakukan apa-apa.
+    /// Jendela ekstra ini (puluhan detik, batas sistem) memberi waktu
+    /// download berjalan sebentar setelah app pindah ke background,
+    /// sebelum jeda-otomatis manager bekerja.
+    @MainActor
+    public static func setDownloadsActive(_ active: Bool) {
+        if active {
+            guard downloadTask == .invalid else { return }
+            downloadTask = UIApplication.shared.beginBackgroundTask(withName: "LlamaChat download") {
+                Task { @MainActor in
+                    endDownloadTask()
+                }
+            }
+        } else {
+            endDownloadTask()
+        }
+    }
+
+    @MainActor
+    private static func endDownloadTask() {
+        guard downloadTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(downloadTask)
+        downloadTask = .invalid
+    }
+
     /// Kirim notifikasi lokal HANYA kalau app sedang di background.
     /// Di foreground tidak ada notifikasi: jawabannya sudah terlihat
     /// di layar. Harus dipanggil di main thread.
@@ -68,4 +97,5 @@ public enum BackgroundSupport {
     }
 
     private static var authorizationRequested = false
+    private static var downloadTask: UIBackgroundTaskIdentifier = .invalid
 }
