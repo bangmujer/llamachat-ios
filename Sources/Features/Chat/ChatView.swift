@@ -255,7 +255,7 @@ struct ChatView: View {
         Task {
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url), data.count <= 5_000_000 else { return }
+            guard let data = try? Data(contentsOf: url), data.count <= 10_000_000 else { return }
             guard let attachment = try? AttachmentStore.saveFile(data: data, fileName: url.lastPathComponent) else { return }
             var pending = attachment
             pending.isProcessing = true
