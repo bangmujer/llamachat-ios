@@ -1,3 +1,4 @@
+import ActivityKit
 import Foundation
 
 /// Download model GGUF dengan segmen paralel ala download manager
@@ -136,6 +137,19 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
     private var order: [UUID] = []
     private var lastPublishAt = Date.distantPast
     private var backgroundCompletionHandlers: [String: () -> Void] = [:]
+
+    // MARK: - Live Activity (Dynamic Island)
+
+    /// Satu activity aktif dalam satu waktu: download yang sedang
+    /// berjalan (atau terjeda). Semua akses dari `workQueue`, sama
+    /// seperti state download lainnya.
+    private var liveActivity: Activity<DownloadActivityAttributes>?
+    /// Sudah pernah memeriksa activity yang masih hidup dari
+    /// peluncuran sebelumnya (adopsi, supaya tidak duplikat).
+    private var liveActivityAdopted = false
+    private var lastLiveActivityUpdate = Date.distantPast
+    private var lastLiveActivityProgress = -1.0
+    private var lastLiveActivityState: ItemState?
 
     /// Antrean delegate serial yang berjalan DI ATAS `workQueue`:
     /// callback byte yang masuk dan aksi pengguna (Jeda/Lanjutkan/
@@ -932,6 +946,7 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         }
         lastPublishAt = now
         let snapshot = items
+        syncLiveActivity(with: snapshot)
         if Thread.isMainThread {
             downloads = snapshot
         } else {
@@ -943,6 +958,104 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         if Date().timeIntervalSince(lastPublishAt) >= 0.25 {
             publish()
         }
+    }
+
+    // MARK: - Live Activity (Dynamic Island)
+
+    /// Selaraskan Live Activity dengan download yang ditampilkan:
+    /// download pertama yang sedang berjalan, memeriksa, atau
+    /// terjeda. Selesai/gagal/batal = tidak ada yang ditampilkan,
+    /// activity diakhiri. Update dibatasi (ganti state, atau progres
+    /// bergerak >= 1%, atau >= 2 detik sejak update terakhir) karena
+    /// sistem membatasi frekuensi update Live Activity.
+    ///
+    /// Kegagalan Live Activity (mis. dimatikan pengguna, atau
+    /// extension tidak termuat di install unsigned) TIDAK mengganggu
+    /// download: semua kegagalan ditelan diam-diam.
+    private func syncLiveActivity(with items: [DownloadItem]) {
+        let featured = items.first {
+            $0.state == .downloading || $0.state == .verifying || $0.state == .paused
+        }
+        guard let featured else {
+            endLiveActivity()
+            return
+        }
+        if !liveActivityAdopted {
+            liveActivityAdopted = true
+            if let existing = Activity<DownloadActivityAttributes>.activities.first(
+                where: { $0.attributes.downloadID == featured.id }
+            ) {
+                liveActivity = existing
+            }
+        }
+        // Jangan membangkitkan Live Activity untuk download yang
+        // sudah terjeda sejak sebelum app dibuka (mis. setelah
+        // relaunch): activity hanya dimulai saat download berjalan.
+        // Kalau activity lama masih hidup, tampilkan status terjedanya.
+        if featured.state == .paused, liveActivity == nil {
+            return
+        }
+        let state = DownloadActivityAttributes.ContentState(
+            fileName: featured.fileName,
+            receivedBytes: featured.receivedBytes,
+            totalBytes: featured.totalBytes,
+            progress: featured.progress,
+            stateText: featured.state == .paused
+                ? "Terjeda"
+                : featured.state == .verifying ? "Memeriksa" : "Mengunduh",
+            speedBytesPerSec: featured.state == .downloading ? featured.speedBytesPerSec : 0
+        )
+        if let activity = liveActivity {
+            if activity.attributes.downloadID != featured.id {
+                // Activity lama milik download lain: akhiri, lalu
+                // mulai yang baru (kecuali yang tampil sedang jeda).
+                endLiveActivity()
+                if featured.state != .paused {
+                    startLiveActivity(for: featured, state: state)
+                }
+                return
+            }
+            let now = Date()
+            let progressDelta = abs(featured.progress - lastLiveActivityProgress)
+            let stateChanged = lastLiveActivityState != featured.state
+            guard stateChanged || progressDelta >= 0.01
+                    || now.timeIntervalSince(lastLiveActivityUpdate) >= 2
+            else { return }
+            lastLiveActivityUpdate = now
+            lastLiveActivityProgress = featured.progress
+            lastLiveActivityState = featured.state
+            Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        } else {
+            startLiveActivity(for: featured, state: state)
+        }
+    }
+
+    private func startLiveActivity(
+        for item: DownloadItem,
+        state: DownloadActivityAttributes.ContentState
+    ) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        do {
+            let activity = try Activity.request(
+                attributes: DownloadActivityAttributes(downloadID: item.id),
+                content: ActivityContent(state: state, staleDate: nil),
+                pushType: nil
+            )
+            liveActivity = activity
+            lastLiveActivityUpdate = Date()
+            lastLiveActivityProgress = item.progress
+            lastLiveActivityState = item.state
+        } catch {
+            // Live Activity tidak tersedia: download tetap jalan normal.
+        }
+    }
+
+    private func endLiveActivity() {
+        guard let activity = liveActivity else { return }
+        liveActivity = nil
+        lastLiveActivityProgress = -1
+        lastLiveActivityState = nil
+        Task { await activity.end(nil, dismissalPolicy: .immediate) }
     }
 }
 
