@@ -1,8 +1,8 @@
+import PhotosUI
 import SwiftData
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-import UIKit
 
 /// Chat UI Fase B/D: satu percakapan di layar, riwayat tersimpan di
 /// SwiftData dan bisa dibuka lewat daftar percakapan (sheet).
@@ -24,10 +24,17 @@ struct ChatView: View {
     let engine: LlamaEngine
 
     @StateObject private var viewModel: ChatViewModel
+    @StateObject private var voiceRecorder = VoiceRecorder()
     @State private var draftText = ""
     @State private var showingPicker = false
     @State private var showingSettings = false
     @State private var showingConversations = false
+    /// Lampiran Build 2 yang menunggu dikirim bersama pesan berikutnya.
+    @State private var pendingAttachments: [ChatAttachment] = []
+    /// Mode suara (Build 2): voice note langsung dikirim + jawaban
+    /// dibacakan otomatis. Dibaca di sini untuk alur kirim otomatis;
+    /// nilainya diubah di Settings → Suara.
+    @AppStorage("llamachat.voiceModeEnabled") private var voiceModeEnabled = false
     /// Pesan pengguna yang sedang diubah lewat sheet editor (Fase 2).
     @State private var editingMessage: ChatMessage?
 
@@ -90,10 +97,26 @@ struct ChatView: View {
                 text: $draftText,
                 canSend: viewModel.canSend,
                 isGenerating: viewModel.isGenerating,
+                pendingAttachments: pendingAttachments,
+                isRecording: voiceRecorder.isRecording,
+                recordingElapsed: voiceRecorder.elapsed,
+                isTranscribing: voiceRecorder.isTranscribing,
+                onRemoveAttachment: removePendingAttachment,
+                onPhotoPicked: handlePhotoItem,
+                onFilesPicked: handleAttachmentFiles,
+                onMicTap: {
+                    if voiceRecorder.isRecording {
+                        voiceRecorder.stopAndTranscribe()
+                    } else {
+                        voiceRecorder.startRecording()
+                    }
+                },
                 onSend: {
                     let text = draftText
+                    let attachments = pendingAttachments
                     draftText = ""
-                    viewModel.send(text)
+                    pendingAttachments = []
+                    viewModel.send(text, attachments: attachments)
                 },
                 onStop: {
                     viewModel.stop()
@@ -113,6 +136,7 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .topBarLeading) {
                 Button {
+                    voiceRecorder.cancelRecording()
                     viewModel.startNewChat()
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -181,6 +205,94 @@ struct ChatView: View {
             viewModel.restoreLatestConversationIfNeeded()
             await viewModel.loadModelIfNeeded()
         }
+        .onChange(of: voiceRecorder.completed) { _, result in
+            guard let result else { return }
+            handleVoiceRecording(result)
+            voiceRecorder.completed = nil
+        }
+        .alert(
+            "Voice note",
+            isPresented: Binding(
+                get: { voiceRecorder.alertMessage != nil },
+                set: { if !$0 { voiceRecorder.alertMessage = nil } }
+            )
+        ) {
+            Button("OK") {}
+        } message: {
+            Text(voiceRecorder.alertMessage ?? "")
+        }
+    }
+
+    // MARK: - Lampiran & voice note (Build 2)
+
+    private func removePendingAttachment(_ attachment: ChatAttachment) {
+        pendingAttachments.removeAll { $0.id == attachment.id }
+        AttachmentStore.delete(attachment)
+    }
+
+    /// Foto dari galeri: simpan sebagai lampiran, lalu jalankan OCR
+    /// dan tempel hasilnya ke lampiran yang sama (chip diperbarui).
+    private func handlePhotoItem(_ item: PhotosPickerItem) {
+        Task {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  UIImage(data: data) != nil else { return }
+            let stamp = Self.photoTimestamp()
+            guard let attachment = try? AttachmentStore.saveImage(data: data, fileName: "Foto \(stamp).jpg") else { return }
+            var pending = attachment
+            pending.isProcessing = true
+            pendingAttachments.append(pending)
+            let text = await AttachmentProcessor.extractText(for: attachment)
+            if let index = pendingAttachments.firstIndex(where: { $0.id == attachment.id }) {
+                pendingAttachments[index].extractedText = text
+                pendingAttachments[index].isProcessing = false
+            }
+        }
+    }
+
+    /// File teks/PDF dari picker: simpan, ekstrak isinya, perbarui chip.
+    private func handleAttachmentFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        Task {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url), data.count <= 5_000_000 else { return }
+            guard let attachment = try? AttachmentStore.saveFile(data: data, fileName: url.lastPathComponent) else { return }
+            var pending = attachment
+            pending.isProcessing = true
+            pendingAttachments.append(pending)
+            let text = await AttachmentProcessor.extractText(for: attachment)
+            if let index = pendingAttachments.firstIndex(where: { $0.id == attachment.id }) {
+                pendingAttachments[index].extractedText = text
+                pendingAttachments[index].isProcessing = false
+            }
+        }
+    }
+
+    /// Voice note selesai ditranskripsi: simpan audio sebagai lampiran,
+    /// isi draf dengan transkripsi. Dalam mode suara, langsung kirim
+    /// tanpa menunggu pengguna menekan kirim.
+    private func handleVoiceRecording(_ result: VoiceRecordingResult) {
+        guard let attachment = try? AttachmentStore.saveAudio(
+            data: result.audioData,
+            duration: result.duration,
+            transcription: result.transcription
+        ) else { return }
+        pendingAttachments.append(attachment)
+        if !result.transcription.isEmpty {
+            draftText = result.transcription
+        }
+        guard voiceModeEnabled, !result.transcription.isEmpty else { return }
+        let text = draftText
+        let attachments = pendingAttachments
+        draftText = ""
+        pendingAttachments = []
+        viewModel.send(text, attachments: attachments)
+    }
+
+    private static func photoTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH.mm.ss"
+        return formatter.string(from: Date())
     }
 
     // MARK: - Keyboard
