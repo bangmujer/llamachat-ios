@@ -3,14 +3,18 @@
 Chat app SwiftUI yang menjalankan LLM lokal lewat llama.cpp. Tanpa API
 pihak ketiga. Inference di background, Metal, full offload GPU.
 
-**Status: Fase 2 + Agent + Katalog Model + Web Tools.** Di atas Fase A–D: regenerate/edit/copy,
+**Status: Fase 2 + Agent + Katalog Model + Web Tools + Build 2.** Di atas Fase A–D: regenerate/edit/copy,
 penghitung token + bar konteks, dark mode, haptik, Markdown blok
 (tabel, blok kode, lipat pesan panjang), dan agent tools (waktu, info
 perangkat, kalender, pengingat, kontak, Shortcut, cari di internet,
 buka halaman web) dengan orkestrasi tool-call 2 langkah dan
 konfirmasi untuk tool tulis/eksternal, plus sakelar utama Mode Agen
 (nonaktif = chat menjawab langsung tanpa langkah keputusan tool,
-lebih cepat). Tool internet nonaktif secara
+lebih cepat). Build 2: lampiran gambar (OCR Vision on-device) dan
+file teks/PDF (ekstraksi isi) yang ditempel sebagai konteks prompt,
+voice note (rekam + transkripsi pengenalan ucapan iOS, playback),
+TTS tombol speaker di jawaban asisten, dan mode suara turn-based
+(rekam → kirim otomatis → jawaban dibacakan). Tool internet nonaktif secara
 default (query dikirim ke mesin pencari) dan memakai Google
 Programmable Search bila pengguna mengisi API key + Search Engine ID
 di Settings (disimpan di Keychain), dengan fallback DuckDuckGo (dua
