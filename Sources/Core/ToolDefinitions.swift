@@ -130,12 +130,26 @@ public enum ToolPrompt {
 /// pengguna mengaktifkannya sendiri di Settings. Tool yang nonaktif
 /// tidak muncul di prompt dan tidak bisa dipanggil model.
 public enum ToolPreferences {
+    /// Sakelar utama Mode Agen (kunci UserDefaults yang sama dipakai
+    /// `@AppStorage` di SettingsView supaya UI ikut segar saat diubah).
+    ///
+    /// Default AKTIF (perilaku selama ini). Bila NONAKTIF,
+    /// `enabledTools` kosong sehingga `ChatViewModel` melewati
+    /// langkah keputusan tool sepenuhnya dan chat menjawab langsung
+    /// (lebih cepat, prompt lebih pendek). Pilihan per-tool tetap
+    /// tersimpan dan berlaku lagi saat Mode Agen diaktifkan kembali.
+    public static var agentEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "llamachat.agentEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "llamachat.agentEnabled") }
+    }
+
     private static func key(for tool: AgentTool) -> String {
         "llamachat.tool.\(tool.rawValue)"
     }
 
     public static var enabledTools: [AgentTool] {
-        AgentTool.allCases.filter { isEnabled($0) }
+        guard agentEnabled else { return [] }
+        return AgentTool.allCases.filter { isEnabled($0) }
     }
 
     public static var anyEnabled: Bool { !enabledTools.isEmpty }
