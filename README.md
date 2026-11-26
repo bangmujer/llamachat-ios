@@ -10,7 +10,9 @@ perangkat, kalender, pengingat, kontak, Shortcut, cari di internet,
 buka halaman web) dengan orkestrasi tool-call 2 langkah dan
 konfirmasi untuk tool tulis/eksternal, plus sakelar utama Mode Agen
 (nonaktif = chat menjawab langsung tanpa langkah keputusan tool,
-lebih cepat). Build 2: lampiran gambar (OCR Vision on-device) dan
+lebih cepat). Sakelar "Lewati proses berpikir" menempelkan
+`/no_think` di akhir pesan pengguna (konvensi Qwen3) supaya model
+menjawab langsung tanpa blok penalaran. Build 2: lampiran gambar (OCR Vision on-device) dan
 file teks/PDF (ekstraksi isi) yang ditempel sebagai konteks prompt,
 voice note (rekam + transkripsi pengenalan ucapan iOS, playback),
 TTS tombol speaker di jawaban asisten, dan mode suara turn-based
