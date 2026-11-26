@@ -16,6 +16,9 @@ public struct SettingsView: View {
     @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
     @State private var hapticsEnabled = true
 
+    @State private var googleApiKey = ""
+    @State private var googleEngineID = ""
+
     @State private var showingModelManager = false
     @State private var showingPromptEditor = false
 
@@ -91,6 +94,30 @@ public struct SettingsView: View {
                     Text("Tool yang nonaktif tidak ditawarkan ke model. Tool baca yang butuh izin (Kalender, Kontak) meminta izin iOS saat pertama dipakai. Tool internet (Cari di internet, Buka halaman web) mengirim query/URL ke mesin pencari dan situs terkait — nonaktif secara default, aktifkan sendiri bila perlu.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Pencarian Google (opsional)") {
+                    Text("Isi keduanya untuk memakai Google sebagai mesin pencari tool \"Cari di internet\" (Programmable Search API, gratis 100 pencarian/hari). Keduanya disimpan aman di Keychain HP ini dan hanya dikirim ke Google saat pencarian dipakai. Kosongkan untuk tetap memakai DuckDuckGo + Wikipedia.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    SecureField("API Key Google", text: $googleApiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: googleApiKey) { _, newValue in
+                            WebSearchSettings.setApiKey(newValue)
+                        }
+                    TextField("Search Engine ID (CX)", text: $googleEngineID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: googleEngineID) { _, newValue in
+                            WebSearchSettings.setEngineID(newValue)
+                        }
+                    LabeledContent(
+                        "Status Google",
+                        value: googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || googleEngineID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "Belum terkonfigurasi" : "Terkonfigurasi"
+                    )
                 }
 
                 Section("Parameter Sampling") {
@@ -199,6 +226,8 @@ public struct SettingsView: View {
         nCtx = params.nCtx
         templateKind = viewModel.templateKind
         hapticsEnabled = Haptics.isEnabled
+        googleApiKey = WebSearchSettings.apiKey
+        googleEngineID = WebSearchSettings.engineID
     }
 
     private func apply() {
