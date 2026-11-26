@@ -1,43 +1,106 @@
 import Foundation
 
-/// Download model GGUF lewat background `URLSession`.
+/// Download model GGUF dengan segmen paralel ala download manager
+/// (mirip MDM): satu file dipecah menjadi N segmen yang diunduh
+/// bersamaan lewat HTTP Range, lalu digabung. Jumlah segmen per file
+/// dibaca dari UserDefaults `llamachat.downloadConnections` (1...60,
+/// default 8) saat download dimulai. Maksimal 2 file mengunduh
+/// bersamaan; sisanya antre.
 ///
 /// Satu-satunya network call di app ini, dan hanya jalan kalau pengguna
-/// menekan Mulai Download di Model Manager dengan URL yang mereka isi
-/// sendiri (brief: download hanya dari inisiatif eksplisit pengguna).
+/// menekan Unduh di Model Manager / Katalog dengan URL yang mereka
+/// pilih sendiri (brief: download hanya dari inisiatif eksplisit
+/// pengguna).
 ///
-/// Kenapa background session + delegate, bukan `async/await`:
-/// background `URLSession` tidak mendukung API async/await; progress,
-/// resume, dan penyelesaian download hanya tersedia lewat delegate.
-/// Session dibuat dengan identifier stabil supaya download berlanjut
-/// kalau app masuk background, dan `AppDelegate` meneruskan completion
-/// handler sistem ke manager ini saat semua event background selesai.
+/// Kenapa background session + delegate: background `URLSession` tidak
+/// mendukung API async/await; progress dan penyelesaian download hanya
+/// tersedia lewat delegate. Session dibuat dengan identifier stabil
+/// supaya download berlanjut kalau app masuk background, dan
+/// `AppDelegate` meneruskan completion handler sistem ke manager ini.
 ///
-/// Alur: start -> downloading (progress dari `didWriteData`) ->
-/// `didFinishDownloadingTo` (pindah ke Models/, validasi magic GGUF,
-/// verifikasi ukuran kalau ukuran yang diharapkan diketahui, tandai
-/// excludeFromBackup) -> finished. Error di tengah jalan dengan resume
-/// data -> paused (bisa dilanjutkan); tanpa resume data -> failed.
-/// File tujuan yang sudah ada TIDAK ditimpa: pengguna harus menghapus
-/// dulu di Model Manager.
+/// Ketahanan: setiap segmen yang selesai disimpan sebagai file part di
+/// Application Support, dan progresnya dicatat di `state.json`. Jeda,
+/// gagal, atau app tertutup tidak menghilangkan segmen yang sudah
+/// selesai — Lanjutkan hanya mengunduh segmen yang belum lengkap.
+/// Saat app diluncurkan ulang, task background yatim dibatalkan dan
+/// semua download yang belum selesai dipulihkan sebagai terjeda.
+///
+/// Kalau server tidak mendukung Range (status 200, bukan 206), manager
+/// otomatis jatuh ke satu download utuh tanpa segmen. File tujuan yang
+/// sudah ada TIDAK ditimpa: pengguna harus menghapus dulu di Model
+/// Manager.
 public final class ModelDownloadManager: NSObject, ObservableObject {
+
     public static let shared = ModelDownloadManager()
 
-    public enum State: Equatable {
-        case idle
-        case downloading(progress: Double, receivedBytes: Int64, expectedBytes: Int64, fileName: String)
-        case paused(progress: Double, receivedBytes: Int64, expectedBytes: Int64, fileName: String)
-        case verifying(fileName: String)
-        case finished(fileName: String)
-        case failed(String)
+    public enum ItemState: Equatable, Sendable {
+        case queued
+        case probing
+        case downloading
+        case paused
+        case verifying
+        case finished
+        case failed
     }
 
-    @Published public private(set) var state: State = .idle
+    public struct DownloadItem: Identifiable, Equatable, Sendable {
+        public let id: UUID
+        public let url: URL
+        public let fileName: String
+        public var state: ItemState
+        public var progress: Double
+        public var receivedBytes: Int64
+        public var totalBytes: Int64
+        public var speedBytesPerSec: Double
+        public var segmentsDone: Int
+        public var segmentCount: Int
+        public var errorMessage: String?
+    }
+
+    @Published public private(set) var downloads: [DownloadItem] = []
 
     /// Dipanggil di main thread setelah satu download selesai dan file
     /// sudah terverifikasi di Models/. Dipakai Model Manager untuk
     /// me-refresh daftar model.
     public var onFinished: (() -> Void)?
+
+    public static let maxConcurrentDownloads = 2
+    public static let maxConnections = 60
+    private static let minSegmentBytes: Int64 = 1_048_576
+    private static let stateFileName = "state.json"
+
+    private struct Segment: Codable {
+        var start: Int64
+        var end: Int64
+        var completed: Bool
+    }
+
+    private struct DownloadRecord: Codable {
+        var id: UUID
+        var urlString: String
+        var fileName: String
+        var expectedSize: Int64?
+        var totalBytes: Int64
+        var rangesSupported: Bool
+        var segments: [Segment]
+    }
+
+    private struct Runtime {
+        var state: ItemState
+        var taskSegments: [Int: Int] = [:]
+        var inFlightBytes: [Int: Int64] = [:]
+        var errorMessage: String?
+        var lastSampleAt: Date = Date()
+        var lastSampleBytes: Int64 = 0
+        var speedBytesPerSec: Double = 0
+    }
+
+    private let workQueue = DispatchQueue(label: "com.bangmujer.llamachat.downloads")
+    private var records: [UUID: DownloadRecord] = [:]
+    private var runtimes: [UUID: Runtime] = [:]
+    private var order: [UUID] = []
+    private var lastPublishAt = Date.distantPast
+    private var backgroundCompletionHandlers: [String: () -> Void] = [:]
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(
@@ -45,101 +108,120 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         )
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
+        config.httpMaximumConnectionsPerHost = Self.maxConnections
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
-    private var activeTask: URLSessionDownloadTask?
-    private var resumeData: Data?
-    private var destinationFileName: String?
-    private var expectedSizeBytes: Int64?
-    private var backgroundCompletionHandlers: [String: () -> Void] = [:]
-
     private override init() {
         super.init()
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            // Task background dari peluncuran sebelumnya tidak bisa
+            // dipetakan lagi ke segmennya; batalkan, lalu pulihkan
+            // semua download sebagai terjeda dari state.json.
+            self.session.getAllTasks { tasks in
+                tasks.forEach { $0.cancel() }
+            }
+            self.restoreInterruptedDownloads()
+            self.publish()
+        }
     }
 
     // MARK: - Aksi pengguna
 
-    public func start(url: URL, fileName: String, expectedSizeBytes: Int64?) {
-        guard activeTask == nil else { return }
-        guard url.scheme?.lowercased() == "https" else {
-            setState(.failed("URL harus https."))
-            return
-        }
-        let cleanName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanName.isEmpty, cleanName.lowercased().hasSuffix(".gguf") else {
-            setState(.failed("Nama file harus berakhiran .gguf."))
-            return
-        }
-        do {
-            let dir = try ModelLoader.modelsDirectory()
-            let destination = dir.appendingPathComponent(cleanName)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                setState(.failed("File \(cleanName) sudah ada. Hapus dulu di daftar model."))
+    public func startDownload(url: URL, fileName: String, expectedSizeBytes: Int64?) {
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let cleanName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let failMessage: String?
+            if url.scheme?.lowercased() != "https" {
+                failMessage = "URL harus https."
+            } else if cleanName.isEmpty || !cleanName.lowercased().hasSuffix(".gguf") {
+                failMessage = "Nama file harus berakhiran .gguf."
+            } else if cleanName.contains("/") || cleanName.contains("..") {
+                failMessage = "Nama file tidak valid."
+            } else if self.records.values.contains(where: { $0.fileName.lowercased() == cleanName.lowercased() }) {
+                failMessage = "File \(cleanName) sedang diunduh atau terjeda."
+            } else if self.destinationExists(named: cleanName) {
+                failMessage = "File \(cleanName) sudah ada. Hapus dulu di daftar model."
+            } else {
+                failMessage = nil
+            }
+            if let failMessage {
+                let id = UUID()
+                self.records[id] = DownloadRecord(
+                    id: id, urlString: url.absoluteString, fileName: cleanName,
+                    expectedSize: expectedSizeBytes, totalBytes: 0,
+                    rangesSupported: false, segments: []
+                )
+                self.runtimes[id] = Runtime(state: .failed, errorMessage: failMessage)
+                self.order.append(id)
+                self.publish()
                 return
             }
-        } catch {
-            setState(.failed(error.localizedDescription))
-            return
+            let id = UUID()
+            self.records[id] = DownloadRecord(
+                id: id, urlString: url.absoluteString, fileName: cleanName,
+                expectedSize: expectedSizeBytes, totalBytes: expectedSizeBytes ?? 0,
+                rangesSupported: false, segments: []
+            )
+            self.runtimes[id] = Runtime(state: .probing)
+            self.order.append(id)
+            self.publish()
+            self.probe(url: url, id: id)
         }
-        destinationFileName = cleanName
-        self.expectedSizeBytes = expectedSizeBytes
-        resumeData = nil
-        let task = session.downloadTask(with: url)
-        activeTask = task
-        setState(.downloading(progress: 0, receivedBytes: 0, expectedBytes: expectedSizeBytes ?? 0, fileName: cleanName))
-        task.resume()
     }
 
-    public func pause() {
-        guard let task = activeTask else { return }
-        let fileName = destinationFileName
-        task.cancel { [weak self] data in
-            guard let self else { return }
-            // Completion bisa jalan di queue mana saja; semua pembacaan
-            // state + penulisan resume data dilakukan di main thread.
-            DispatchQueue.main.async {
-                self.resumeData = data
-                self.activeTask = nil
-                var progress = 0.0
-                var received: Int64 = 0
-                var expected: Int64 = 0
-                if case .downloading(let p, let r, let e, _) = self.state {
-                    progress = p; received = r; expected = e
+    public func pauseDownload(id: UUID) {
+        workQueue.async { [weak self] in
+            guard let self, var runtime = self.runtimes[id], self.records[id] != nil else { return }
+            guard runtime.state == .downloading || runtime.state == .queued || runtime.state == .probing else { return }
+            self.cancelTasks(for: id, runtime: &runtime)
+            runtime.state = .paused
+            runtime.errorMessage = nil
+            self.runtimes[id] = runtime
+            self.persistRecord(id: id)
+            self.publish()
+            self.startNextQueued()
+        }
+    }
+
+    public func resumeDownload(id: UUID) {
+        workQueue.async { [weak self] in
+            guard let self, var runtime = self.runtimes[id], let record = self.records[id] else { return }
+            guard runtime.state == .paused || runtime.state == .failed else { return }
+            runtime.errorMessage = nil
+            if record.segments.isEmpty {
+                runtime.state = .probing
+                self.runtimes[id] = runtime
+                self.publish()
+                if let url = URL(string: record.urlString) {
+                    self.probe(url: url, id: id)
                 }
-                self.state = .paused(progress: progress, receivedBytes: received, expectedBytes: expected, fileName: fileName ?? "model.gguf")
+                return
+            }
+            runtime.state = self.activeDownloadCount() < Self.maxConcurrentDownloads ? .downloading : .queued
+            self.runtimes[id] = runtime
+            self.publish()
+            if runtime.state == .downloading {
+                self.startSegmentTasks(id: id)
             }
         }
     }
 
-    public func resumeDownload() {
-        guard activeTask == nil, let fileName = destinationFileName else { return }
-        let task: URLSessionDownloadTask
-        if let resumeData {
-            task = session.downloadTask(withResumeData: resumeData)
-            self.resumeData = nil
-        } else {
-            // Tanpa resume data tidak bisa melanjutkan dari byte terakhir;
-            // mulai ulang membutuhkan URL asal. Simpan URL di task
-            // description tidak didukung di background session, jadi
-            // kasus ini dilaporkan sebagai gagal dan pengguna memulai
-            // ulang dari form download.
-            setState(.failed("Tidak ada data resume. Mulai download dari awal."))
-            destinationFileName = nil
-            return
+    public func cancelDownload(id: UUID) {
+        workQueue.async { [weak self] in
+            guard let self, var runtime = self.runtimes[id] else { return }
+            self.cancelTasks(for: id, runtime: &runtime)
+            if let record = self.records[id] {
+                try? FileManager.default.removeItem(at: self.partsDirectory(for: record))
+            }
+            self.records.removeValue(forKey: id)
+            self.runtimes.removeValue(forKey: id)
+            self.order.removeAll { $0 == id }
+            self.publish()
+            self.startNextQueued()
         }
-        activeTask = task
-        setState(.downloading(progress: 0, receivedBytes: 0, expectedBytes: expectedSizeBytes ?? 0, fileName: fileName))
-        task.resume()
-    }
-
-    public func cancel() {
-        activeTask?.cancel()
-        activeTask = nil
-        resumeData = nil
-        destinationFileName = nil
-        expectedSizeBytes = nil
-        setState(.idle)
     }
 
     /// Dipanggil AppDelegate saat iOS membangunkan app untuk background
@@ -149,45 +231,398 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         backgroundCompletionHandlers[identifier] = handler
     }
 
-    // MARK: - Bantuan internal
+    // MARK: - Probe + segmen
 
-    private func setState(_ newState: State) {
-        if Thread.isMainThread {
-            state = newState
-        } else {
-            DispatchQueue.main.async { self.state = newState }
+    private func probe(url: URL, id: UUID) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 30
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        let task = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+            guard let self else { return }
+            self.workQueue.async {
+                guard var runtime = self.runtimes[id], let record = self.records[id] else { return }
+                guard runtime.state == .probing else { return }
+                if let error {
+                    runtime.state = .failed
+                    runtime.errorMessage = "Gagal memeriksa file: \(error.localizedDescription)"
+                    self.runtimes[id] = runtime
+                    self.publish()
+                    return
+                }
+                guard let http = response as? HTTPURLResponse else {
+                    runtime.state = .failed
+                    runtime.errorMessage = "Server tidak merespons dengan benar."
+                    self.runtimes[id] = runtime
+                    self.publish()
+                    return
+                }
+                var updated = record
+                if http.statusCode == 206, let total = Self.totalBytes(from: http) {
+                    updated.rangesSupported = true
+                    updated.totalBytes = total
+                    updated.segments = Self.makeSegments(totalBytes: total, count: self.connectionCount())
+                } else if http.statusCode == 200 {
+                    updated.rangesSupported = false
+                    let length = http.expectedContentLength
+                    if length > 0 {
+                        updated.totalBytes = length
+                    }
+                    updated.segments = [Segment(start: 0, end: -1, completed: false)]
+                } else {
+                    runtime.state = .failed
+                    runtime.errorMessage = "Server menolak download (HTTP \(http.statusCode))."
+                    self.runtimes[id] = runtime
+                    self.publish()
+                    return
+                }
+                self.records[id] = updated
+                self.persistRecord(id: id)
+                runtime.state = self.activeDownloadCount() < Self.maxConcurrentDownloads ? .downloading : .queued
+                self.runtimes[id] = runtime
+                self.publish()
+                if runtime.state == .downloading {
+                    self.startSegmentTasks(id: id)
+                }
+            }
+        }
+        task.resume()
+    }
+
+    private static func totalBytes(from response: HTTPURLResponse) -> Int64? {
+        for (key, value) in response.allHeaderFields {
+            guard let keyString = key as? String, keyString.lowercased() == "content-range",
+                  let rangeString = value as? String
+            else { continue }
+            let parts = rangeString.split(separator: "/")
+            guard parts.count == 2, let total = Int64(parts[1]) else { return nil }
+            return total > 0 ? total : nil
+        }
+        return nil
+    }
+
+    private static func makeSegments(totalBytes: Int64, count requested: Int) -> [Segment] {
+        let bySize = max(1, Int(totalBytes / minSegmentBytes))
+        let count = max(1, min(requested, bySize))
+        guard count > 1 else {
+            return [Segment(start: 0, end: totalBytes - 1, completed: false)]
+        }
+        let base = totalBytes / Int64(count)
+        var segments: [Segment] = []
+        for index in 0..<count {
+            let start = Int64(index) * base
+            let end = index == count - 1 ? totalBytes - 1 : start + base - 1
+            segments.append(Segment(start: start, end: end, completed: false))
+        }
+        return segments
+    }
+
+    private func connectionCount() -> Int {
+        let saved = UserDefaults.standard.integer(forKey: "llamachat.downloadConnections")
+        let value = saved == 0 ? 8 : saved
+        return min(Self.maxConnections, max(1, value))
+    }
+
+    private func startSegmentTasks(id: UUID) {
+        guard var runtime = runtimes[id], let record = records[id],
+              let url = URL(string: record.urlString) else { return }
+        runtime.state = .downloading
+        for (index, segment) in record.segments.enumerated() where !segment.completed {
+            let request: URLRequest
+            if record.rangesSupported {
+                var ranged = URLRequest(url: url)
+                ranged.cachePolicy = .reloadIgnoringLocalCacheData
+                ranged.setValue("bytes=\(segment.start)-\(segment.end)", forHTTPHeaderField: "Range")
+                request = ranged
+            } else {
+                request = URLRequest(url: url)
+            }
+            let task = session.downloadTask(with: request)
+            task.taskDescription = "\(id.uuidString)|\(index)"
+            runtime.taskSegments[task.taskIdentifier] = index
+            task.resume()
+        }
+        runtimes[id] = runtime
+    }
+
+    private func startNextQueued() {
+        guard activeDownloadCount() < Self.maxConcurrentDownloads else { return }
+        guard let id = order.first(where: { runtimes[$0]?.state == .queued }),
+              var runtime = runtimes[id], records[id] != nil else { return }
+        runtime.state = .downloading
+        runtimes[id] = runtime
+        publish()
+        startSegmentTasks(id: id)
+    }
+
+    private func activeDownloadCount() -> Int {
+        runtimes.values.filter { $0.state == .downloading || $0.state == .probing || $0.state == .verifying }.count
+    }
+
+    private func cancelTasks(for id: UUID, runtime: inout Runtime) {
+        let taskIDs = Set(runtime.taskSegments.keys)
+        session.getAllTasks { tasks in
+            for task in tasks where taskIDs.contains(task.taskIdentifier) {
+                task.cancel()
+            }
+        }
+        runtime.taskSegments.removeAll()
+        runtime.inFlightBytes.removeAll()
+    }
+
+    // MARK: - File part + state
+
+    private func partsRootDirectory() -> URL {
+        if let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let dir = base.appendingPathComponent("DownloadParts", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let dir = caches.appendingPathComponent("DownloadParts", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("DownloadParts", isDirectory: true)
+    }
+
+    private func partsDirectory(for record: DownloadRecord) -> URL {
+        partsRootDirectory().appendingPathComponent(record.fileName, isDirectory: true)
+    }
+
+    private func partURL(for record: DownloadRecord, index: Int) -> URL {
+        partsDirectory(for: record).appendingPathComponent("part-\(index).bin")
+    }
+
+    private func persistRecord(id: UUID) {
+        guard let record = records[id], !record.segments.isEmpty else { return }
+        do {
+            let dir = partsDirectory(for: record)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(record)
+            try data.write(to: dir.appendingPathComponent(Self.stateFileName), options: .atomic)
+        } catch {
+            // Kegagalan mencatat state tidak membatalkan download; segmen
+            // yang selesai tetap ada sebagai file part.
         }
     }
 
-    private func finishDownloadedFile(at location: URL) {
-        guard let fileName = destinationFileName else {
-            setState(.failed("Nama file tujuan hilang saat download selesai."))
+    private func restoreInterruptedDownloads() {
+        let parent = partsRootDirectory()
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(
+                at: parent, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+              )
+        else { return }
+        for dir in subdirs {
+            let stateURL = dir.appendingPathComponent(Self.stateFileName)
+            guard let data = try? Data(contentsOf: stateURL),
+                  let record = try? JSONDecoder().decode(DownloadRecord.self, from: data),
+                  !record.segments.isEmpty
+            else { continue }
+            records[record.id] = record
+            runtimes[record.id] = Runtime(state: .paused)
+            order.append(record.id)
+        }
+    }
+
+    private func destinationExists(named fileName: String) -> Bool {
+        guard let dir = try? ModelLoader.modelsDirectory() else { return false }
+        return FileManager.default.fileExists(atPath: dir.appendingPathComponent(fileName).path)
+    }
+
+    // MARK: - Penyelesaian
+
+    private func finishSegmentDownload(task: URLSessionDownloadTask, location: URL) {
+        guard let description = task.taskDescription,
+              let separator = description.firstIndex(of: "|"),
+              let id = UUID(uuidString: String(description[..<separator])),
+              let index = Int(description[description.index(after: separator)...]),
+              var record = records[id], var runtime = runtimes[id]
+        else { return }
+        runtime.taskSegments.removeValue(forKey: task.taskIdentifier)
+        runtime.inFlightBytes.removeValue(forKey: task.taskIdentifier)
+
+        if let http = task.response as? HTTPURLResponse, http.statusCode == 200, record.rangesSupported {
+            // Server mengabaikan Range dan mengirim file utuh: pakai
+            // file ini sebagai hasil akhir, batalkan segmen lain.
+            cancelTasks(for: id, runtime: &runtime)
+            runtimes[id] = runtime
+            finishWithWholeFile(at: location, id: id)
             return
         }
-        setState(.verifying(fileName: fileName))
+
+        do {
+            let dir = partsDirectory(for: record)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let part = partURL(for: record, index: index)
+            if FileManager.default.fileExists(atPath: part.path) {
+                try FileManager.default.removeItem(at: part)
+            }
+            try FileManager.default.moveItem(at: location, to: part)
+            record.segments[index].completed = true
+            records[id] = record
+            persistRecord(id: id)
+        } catch {
+            runtime.state = .failed
+            runtime.errorMessage = "Gagal menyimpan segmen: \(error.localizedDescription)"
+            cancelTasks(for: id, runtime: &runtime)
+            runtimes[id] = runtime
+            publish()
+            startNextQueued()
+            return
+        }
+
+        if record.segments.allSatisfy({ $0.completed }) {
+            runtime.state = .verifying
+            runtimes[id] = runtime
+            publish()
+            mergeParts(id: id)
+        } else {
+            runtimes[id] = runtime
+            publish()
+        }
+    }
+
+    private func mergeParts(id: UUID) {
+        guard let record = records[id], var runtime = runtimes[id] else { return }
         do {
             let dir = try ModelLoader.modelsDirectory()
-            let destination = dir.appendingPathComponent(fileName)
+            let destination = dir.appendingPathComponent(record.fileName)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            FileManager.default.createFile(atPath: destination.path, contents: nil)
+            let writer = try FileHandle(forWritingTo: destination)
+            defer { try? writer.close() }
+            for index in record.segments.indices {
+                let reader = try FileHandle(forReadingFrom: partURL(for: record, index: index))
+                defer { try? reader.close() }
+                while true {
+                    let chunk = try reader.read(upToCount: 1 << 20) ?? Data()
+                    if chunk.isEmpty { break }
+                    try writer.write(contentsOf: chunk)
+                }
+            }
+            try ModelLoader.validateGGUFMagic(at: destination)
+            let actualSize = try ModelLoader.fileSizeBytes(at: destination)
+            let expected = record.expectedSize ?? (record.totalBytes > 0 ? record.totalBytes : nil)
+            if let expected, expected > 0, actualSize != expected {
+                try? FileManager.default.removeItem(at: destination)
+                runtime.state = .failed
+                runtime.errorMessage = "Ukuran file tidak cocok: diunduh \(actualSize) byte, diharapkan \(expected) byte. File dihapus."
+                runtimes[id] = runtime
+                publish()
+                return
+            }
+            try ModelLoader.excludeFromBackup(destination)
+            try? FileManager.default.removeItem(at: partsDirectory(for: record))
+            runtime.state = .finished
+            runtimes[id] = runtime
+            publish()
+            DispatchQueue.main.async { [weak self] in self?.onFinished?() }
+            startNextQueued()
+        } catch {
+            runtime.state = .failed
+            runtime.errorMessage = "Gagal menggabungkan file: \(error.localizedDescription)"
+            runtimes[id] = runtime
+            publish()
+            startNextQueued()
+        }
+    }
+
+    private func finishWithWholeFile(at location: URL, id: UUID) {
+        guard let record = records[id], var runtime = runtimes[id] else { return }
+        runtime.state = .verifying
+        runtimes[id] = runtime
+        publish()
+        do {
+            let dir = try ModelLoader.modelsDirectory()
+            let destination = dir.appendingPathComponent(record.fileName)
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.moveItem(at: location, to: destination)
             try ModelLoader.validateGGUFMagic(at: destination)
             let actualSize = try ModelLoader.fileSizeBytes(at: destination)
-            if let expected = expectedSizeBytes, expected > 0, actualSize != expected {
+            if let expected = record.expectedSize, expected > 0, actualSize != expected {
                 try? FileManager.default.removeItem(at: destination)
-                setState(.failed("Ukuran file tidak cocok: diunduh \(actualSize) byte, diharapkan \(expected) byte. File dihapus."))
+                runtime.state = .failed
+                runtime.errorMessage = "Ukuran file tidak cocok: diunduh \(actualSize) byte, diharapkan \(expected) byte. File dihapus."
+                runtimes[id] = runtime
+                publish()
                 return
             }
             try ModelLoader.excludeFromBackup(destination)
-            activeTask = nil
-            resumeData = nil
-            destinationFileName = nil
-            expectedSizeBytes = nil
-            setState(.finished(fileName: fileName))
-            onFinished?()
+            try? FileManager.default.removeItem(at: partsDirectory(for: record))
+            runtime.state = .finished
+            runtimes[id] = runtime
+            publish()
+            DispatchQueue.main.async { [weak self] in self?.onFinished?() }
+            startNextQueued()
         } catch {
-            setState(.failed("Gagal menyimpan model: \(error.localizedDescription)"))
+            runtime.state = .failed
+            runtime.errorMessage = "Gagal menyimpan model: \(error.localizedDescription)"
+            runtimes[id] = runtime
+            publish()
+            startNextQueued()
+        }
+    }
+
+    // MARK: - Publikasi state ke UI
+
+    private func publish() {
+        let now = Date()
+        var items: [DownloadItem] = []
+        for id in order {
+            guard let record = records[id], var runtime = runtimes[id],
+                  let url = URL(string: record.urlString) else { continue }
+            let completedBytes = record.segments
+                .filter { $0.completed }
+                .reduce(Int64(0)) { $0 + max(0, $1.end - $1.start + 1) }
+            let received = completedBytes + runtime.inFlightBytes.values.reduce(0, +)
+            let elapsed = now.timeIntervalSince(runtime.lastSampleAt)
+            if elapsed >= 0.25 {
+                let instant = elapsed > 0 ? Double(received - runtime.lastSampleBytes) / elapsed : 0
+                runtime.speedBytesPerSec = runtime.speedBytesPerSec == 0
+                    ? instant
+                    : runtime.speedBytesPerSec * 0.6 + instant * 0.4
+                runtime.lastSampleAt = now
+                runtime.lastSampleBytes = received
+                runtimes[id] = runtime
+            }
+            let total = record.totalBytes
+            let progress: Double
+            if runtime.state == .finished {
+                progress = 1
+            } else if total > 0 {
+                progress = min(1, Double(received) / Double(total))
+            } else {
+                progress = 0
+            }
+            items.append(DownloadItem(
+                id: id, url: url, fileName: record.fileName,
+                state: runtime.state, progress: progress,
+                receivedBytes: received, totalBytes: total,
+                speedBytesPerSec: runtime.speedBytesPerSec,
+                segmentsDone: record.segments.filter { $0.completed }.count,
+                segmentCount: record.segments.count,
+                errorMessage: runtime.errorMessage
+            ))
+        }
+        lastPublishAt = now
+        let snapshot = items
+        if Thread.isMainThread {
+            downloads = snapshot
+        } else {
+            DispatchQueue.main.async { self.downloads = snapshot }
+        }
+    }
+
+    private func publishThrottled() {
+        if Date().timeIntervalSince(lastPublishAt) >= 0.25 {
+            publish()
         }
     }
 }
@@ -202,20 +637,17 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard let fileName = destinationFileName else { return }
-        let expected = expectedSizeBytes ?? totalBytesExpectedToWrite
-        let progress: Double
-        if expected > 0 {
-            progress = Double(totalBytesWritten) / Double(expected)
-        } else {
-            progress = 0
+        workQueue.async { [weak self] in
+            guard let self,
+                  let description = downloadTask.taskDescription,
+                  let separator = description.firstIndex(of: "|"),
+                  let id = UUID(uuidString: String(description[..<separator])),
+                  var runtime = self.runtimes[id]
+            else { return }
+            runtime.inFlightBytes[downloadTask.taskIdentifier] = totalBytesWritten
+            self.runtimes[id] = runtime
+            self.publishThrottled()
         }
-        setState(.downloading(
-            progress: progress,
-            receivedBytes: totalBytesWritten,
-            expectedBytes: expected,
-            fileName: fileName
-        ))
     }
 
     public func urlSession(
@@ -223,32 +655,32 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        finishDownloadedFile(at: location)
+        workQueue.async { [weak self] in
+            self?.finishSegmentDownload(task: downloadTask, location: location)
+        }
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error else { return }
-        // Error -999 (cancelled) dari pause() ditangani di closure
-        // cancel(byProducingResumeData:); abaikan di sini supaya state
-        // paused tidak tertimpa failed.
         let nsError = error as NSError
         if nsError.code == NSURLErrorCancelled { return }
-        activeTask = nil
-        if let resume = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, !resume.isEmpty {
-            resumeData = resume
-            let current = state
-            var progress = 0.0
-            var received: Int64 = 0
-            var expected: Int64 = 0
-            var fileName = destinationFileName ?? "model.gguf"
-            if case .downloading(let p, let r, let e, let f) = current {
-                progress = p; received = r; expected = e; fileName = f
-            }
-            setState(.paused(progress: progress, receivedBytes: received, expectedBytes: expected, fileName: fileName))
-        } else {
-            setState(.failed("Download gagal: \(error.localizedDescription)"))
-            destinationFileName = nil
-            expectedSizeBytes = nil
+        workQueue.async { [weak self] in
+            guard let self,
+                  let description = task.taskDescription,
+                  let separator = description.firstIndex(of: "|"),
+                  let id = UUID(uuidString: String(description[..<separator])),
+                  var runtime = self.runtimes[id], self.records[id] != nil
+            else { return }
+            guard runtime.state == .downloading else { return }
+            runtime.taskSegments.removeValue(forKey: task.taskIdentifier)
+            runtime.inFlightBytes.removeValue(forKey: task.taskIdentifier)
+            runtime.state = .failed
+            runtime.errorMessage = "Download gagal: \(error.localizedDescription) Segmen yang sudah selesai tersimpan — tekan Lanjutkan untuk mencoba lagi."
+            self.cancelTasks(for: id, runtime: &runtime)
+            self.runtimes[id] = runtime
+            self.persistRecord(id: id)
+            self.publish()
+            self.startNextQueued()
         }
     }
 
