@@ -134,7 +134,7 @@ struct ComposerBar: View {
             Button("Foto dari Galeri") {
                 showingPhotoPicker = true
             }
-            Button("File (teks / PDF)") {
+            Button("File (teks / PDF / ZIP)") {
                 showingFileImporter = true
             }
             Button("Batal", role: .cancel) {}
@@ -154,7 +154,7 @@ struct ComposerBar: View {
     }
 
     /// Tipe file yang diterima sebagai lampiran: teks, Markdown, JSON,
-    /// CSV, dan PDF. Validasi isi + batas ukuran dilakukan di
+    /// CSV, PDF, dan arsip ZIP. Validasi isi + batas ukuran dilakukan di
     /// `ChatView` saat file dibaca.
     private static var attachmentTypes: [UTType] {
         [
@@ -164,6 +164,7 @@ struct ComposerBar: View {
             UTType.commaSeparatedText,
             UTType(filenameExtension: "md") ?? UTType.plainText,
             UTType(filenameExtension: "markdown") ?? UTType.plainText,
+            UTType(filenameExtension: "zip") ?? UTType.data,
         ]
     }
 
