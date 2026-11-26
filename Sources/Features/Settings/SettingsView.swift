@@ -88,7 +88,7 @@ public struct SettingsView: View {
                             }
                         }
                     }
-                    Text("Tool yang nonaktif tidak ditawarkan ke model. Tool baca yang butuh izin (Kalender, Kontak) meminta izin iOS saat pertama dipakai.")
+                    Text("Tool yang nonaktif tidak ditawarkan ke model. Tool baca yang butuh izin (Kalender, Kontak) meminta izin iOS saat pertama dipakai. Tool internet (Cari di internet, Buka halaman web) mengirim query/URL ke mesin pencari dan situs terkait — nonaktif secara default, aktifkan sendiri bila perlu.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
