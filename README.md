@@ -36,7 +36,10 @@ Screen (widget extension; butuh tes on-device di install
 unsigned/TrollStore). Setiap model di Model Manager memakai ikon
 avatar publisher-nya langsung dari server Hugging Face (endpoint
 `/api/avatars/…`; monogram huruf kalau avatar tidak bisa dimuat).
-Redesign UI/UX menyeluruh belum
+Panel diagnosis sementara di Model Manager menampilkan kecepatan per
+segmen, protokol HTTP ternegosiasi, status HTTP, TTFB, dan hitungan
+retry/error untuk menyelidiki selisih kecepatan download dengan MDM
+pada kondisi yang sama. Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
 fase" di bawah.
 
