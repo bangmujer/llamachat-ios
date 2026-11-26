@@ -260,16 +260,21 @@ public final class ChatViewModel: ObservableObject {
 
     // MARK: - Chat
 
-    public func send(_ rawText: String) {
+    /// Kirim pesan pengguna, dengan lampiran opsional (Build 2).
+    /// Pesan boleh tanpa teks selama ada lampiran (mis. voice note
+    /// yang transkripsinya kosong). Judul percakapan memakai teks,
+    /// atau nama lampiran pertama kalau teks kosong.
+    public func send(_ rawText: String, attachments: [ChatAttachment] = []) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, generationTask == nil, !isGenerating else { return }
+        guard !text.isEmpty || !attachments.isEmpty, generationTask == nil, !isGenerating else { return }
         errorMessage = nil
         tokPerSec = nil
 
-        let userMessage = ChatMessage(role: .user, content: text)
+        let userMessage = ChatMessage(role: .user, content: text, attachments: attachments)
         messages.append(userMessage)
         if messages.count == 1 {
-            conversationTitle = String(text.prefix(40))
+            let titleSource = text.isEmpty ? (attachments.first?.fileName ?? "") : text
+            conversationTitle = String(titleSource.prefix(40))
         }
         scrollVersion += 1
         // Pesan pengguna langsung disimpan, supaya tidak hilang kalau
@@ -304,7 +309,10 @@ public final class ChatViewModel: ObservableObject {
         guard let index = messages.firstIndex(where: { $0.id == id }),
               messages[index].role == .user else { return }
         stop()
-        messages = Array(messages[..<index]) + [ChatMessage(id: id, role: .user, content: text)]
+        // Lampiran pesan yang diubah dipertahankan: editor hanya
+        // mengubah teks, file lampiran tetap menempel di pesan itu.
+        let keptAttachments = messages[index].attachments
+        messages = Array(messages[..<index]) + [ChatMessage(id: id, role: .user, content: text, attachments: keptAttachments)]
         if index == 0 {
             conversationTitle = String(text.prefix(40))
         }
@@ -344,8 +352,19 @@ public final class ChatViewModel: ObservableObject {
             // boleh dikirim kembali ke model. Pesan asisten yang isinya
             // hanya think (generation terpotong di tengah berpikir)
             // dibuang dari riwayat karena tidak membawa jawaban apa pun.
+            // Lampiran pesan pengguna (Build 2) ditempel sebagai blok
+            // konteks teks ke isi pesan — model teks tidak bisa membaca
+            // file/gambar, hanya teks hasil ekstraksinya.
             let history = messages.filter { $0.id != assistantId }
-                .map { ChatMessage(id: $0.id, role: $0.role, content: ThinkBlock.stripped($0.content)) }
+                .map { message -> ChatMessage in
+                    let stripped = ThinkBlock.stripped(message.content)
+                    guard message.role == .user, !message.attachments.isEmpty else {
+                        return ChatMessage(id: message.id, role: message.role, content: stripped)
+                    }
+                    let context = ChatAttachment.promptContext(for: message.attachments)
+                    let content = stripped.isEmpty ? context : stripped + "\n\n" + context
+                    return ChatMessage(id: message.id, role: message.role, content: content)
+                }
                 .filter { !($0.role == .assistant && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             var prompt = ChatTemplate.render(
                 kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
@@ -434,6 +453,7 @@ public final class ChatViewModel: ObservableObject {
                         statusText = "Selesai."
                         Haptics.success()
                         persistCurrentConversation()
+                        maybeSpeakAnswer(assistantId)
                         return
                     }
                     // Teks keputusan kosong: jatuh ke generation normal.
@@ -485,6 +505,7 @@ public final class ChatViewModel: ObservableObject {
             case .endOfTurn, .maxTokens:
                 statusText = "Selesai."
                 Haptics.success()
+                maybeSpeakAnswer(assistantId)
             case .contextOverflow:
                 removeMessageIfEmpty(assistantId)
                 let detail = "Riwayat percakapan melebihi konteks model (n_ctx \(actualNCtx)). Mulai percakapan baru."
@@ -510,12 +531,29 @@ public final class ChatViewModel: ObservableObject {
     /// Kalau ada dialog konfirmasi tool yang sedang menunggu, dialog
     /// itu ditolak (tool tidak dijalankan).
     public func stop() {
+        // Hentikan juga pembacaan jawaban (TTS) dan pemutaran voice
+        // note yang sedang berjalan (Build 2).
+        SpeechReader.shared.stop()
+        AttachmentAudioPlayer.shared.stop()
         if pendingToolContinuation != nil {
             resolvePendingToolCall(confirmed: false)
         }
         generationTask?.cancel()
         generationTask = nil
         statusText = "Stop diminta — menunggu decode berhenti…"
+    }
+
+    /// Mode suara (Build 2): bila aktif, bacakan jawaban yang baru
+    /// selesai memakai TTS. Dipanggil untuk jawaban langsung dari
+    /// langkah keputusan tool dan untuk generation streaming yang
+    /// selesai normal.
+    private func maybeSpeakAnswer(_ assistantId: UUID) {
+        guard VoiceModeSettings.voiceModeEnabled,
+              let index = messages.firstIndex(where: { $0.id == assistantId })
+        else { return }
+        let text = ThinkBlock.stripped(messages[index].content)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        SpeechReader.shared.speak(text, messageID: assistantId)
     }
 
     // MARK: - Agent: generation terkumpul & konfirmasi tool
@@ -652,7 +690,12 @@ public final class ChatViewModel: ObservableObject {
     /// judul default yang dipakai.
     private func titleForPersistence() -> String {
         if let firstUser = messages.first(where: { $0.role == .user }) {
-            return String(firstUser.content.prefix(40))
+            if !firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return String(firstUser.content.prefix(40))
+            }
+            if let fileName = firstUser.attachments.first?.fileName {
+                return String(fileName.prefix(40))
+            }
         }
         return "Percakapan baru"
     }
@@ -690,9 +733,13 @@ public final class ChatViewModel: ObservableObject {
         }
         var synced: [StoredMessage] = []
         for (index, message) in messages.enumerated() {
+            let encodedAttachments = message.attachments.isEmpty
+                ? nil
+                : try? JSONEncoder().encode(message.attachments)
             if let stored = byID[message.id] {
                 stored.content = message.content
                 stored.roleRaw = message.role.rawValue
+                stored.attachmentsData = encodedAttachments
                 stored.sortIndex = index
                 synced.append(stored)
             } else {
@@ -701,7 +748,8 @@ public final class ChatViewModel: ObservableObject {
                     role: message.role,
                     content: message.content,
                     sortIndex: index,
-                    conversation: conversation
+                    conversation: conversation,
+                    attachmentsData: encodedAttachments
                 )
                 modelContext.insert(stored)
                 synced.append(stored)
@@ -721,7 +769,7 @@ public final class ChatViewModel: ObservableObject {
               let index = messages.firstIndex(where: { $0.id == messageId })
         else { return }
         let current = messages[index]
-        messages[index] = ChatMessage(id: current.id, role: current.role, content: current.content + text)
+        messages[index] = ChatMessage(id: current.id, role: current.role, content: current.content + text, attachments: current.attachments)
         scrollVersion += 1
     }
 
