@@ -23,7 +23,7 @@ default (query dikirim ke mesin pencari) dan memakai Google
 Programmable Search bila pengguna mengisi API key + Search Engine ID
 di Settings (disimpan di Keychain), dengan fallback DuckDuckGo (dua
 endpoint, tiga pola markup) + Wikipedia tanpa API key. Model Manager punya katalog model
-terkurasi (9 model, lengkap dengan keterangan kegunaan) dan
+terkurasi (10 model, lengkap dengan keterangan kegunaan) dan
 downloader segmen paralel ala download manager (koneksi 1–60, maks 2
 file bersamaan, tahan jeda/gagal). Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
