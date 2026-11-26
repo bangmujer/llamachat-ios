@@ -20,6 +20,11 @@ public final class StoredMessage {
     /// percakapan disimpan, mengikuti urutan array `messages` di memori.
     public var sortIndex: Int
     public var conversation: Conversation?
+    /// Lampiran Build 2, di-encode sebagai JSON `[ChatAttachment]`.
+    /// Nil = pesan tanpa lampiran (termasuk semua pesan lama sebelum
+    /// Build 2). File lampiran sendiri hidup di
+    /// `Application Support/Attachments/`, bukan di database.
+    public var attachmentsData: Data?
 
     public init(
         id: UUID = UUID(),
@@ -27,7 +32,8 @@ public final class StoredMessage {
         content: String,
         createdAt: Date = Date(),
         sortIndex: Int = 0,
-        conversation: Conversation? = nil
+        conversation: Conversation? = nil,
+        attachmentsData: Data? = nil
     ) {
         self.id = id
         self.roleRaw = role.rawValue
@@ -35,6 +41,7 @@ public final class StoredMessage {
         self.createdAt = createdAt
         self.sortIndex = sortIndex
         self.conversation = conversation
+        self.attachmentsData = attachmentsData
     }
 
     public var role: ChatMessage.Role {
@@ -42,6 +49,17 @@ public final class StoredMessage {
     }
 
     public var chatMessage: ChatMessage {
-        ChatMessage(id: id, role: role, content: content)
+        var attachments: [ChatAttachment] = []
+        if let data = attachmentsData,
+           let decoded = try? JSONDecoder().decode([ChatAttachment].self, from: data) {
+            // State proses sementara tidak boleh bertahan setelah
+            // restore: ekstraksi sudah selesai atau tidak pernah jalan.
+            attachments = decoded.map { attachment in
+                var copy = attachment
+                copy.isProcessing = false
+                return copy
+            }
+        }
+        return ChatMessage(id: id, role: role, content: content, attachments: attachments)
     }
 }
