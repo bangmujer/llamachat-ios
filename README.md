@@ -8,7 +8,9 @@ penghitung token + bar konteks, dark mode, haptik, Markdown blok
 (tabel, blok kode, lipat pesan panjang), dan agent tools (waktu, info
 perangkat, kalender, pengingat, kontak, Shortcut, cari di internet,
 buka halaman web) dengan orkestrasi tool-call 2 langkah dan
-konfirmasi untuk tool tulis/eksternal. Tool internet nonaktif secara
+konfirmasi untuk tool tulis/eksternal, plus sakelar utama Mode Agen
+(nonaktif = chat menjawab langsung tanpa langkah keputusan tool,
+lebih cepat). Tool internet nonaktif secara
 default (query dikirim ke mesin pencari) dan memakai Google
 Programmable Search bila pengguna mengisi API key + Search Engine ID
 di Settings (disimpan di Keychain), dengan fallback DuckDuckGo (dua
