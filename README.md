@@ -9,8 +9,10 @@ penghitung token + bar konteks, dark mode, haptik, Markdown blok
 perangkat, kalender, pengingat, kontak, Shortcut, cari di internet,
 buka halaman web) dengan orkestrasi tool-call 2 langkah dan
 konfirmasi untuk tool tulis/eksternal. Tool internet nonaktif secara
-default (query dikirim ke mesin pencari) dan memakai DuckDuckGo HTML +
-fallback Wikipedia tanpa API key. Model Manager punya katalog model
+default (query dikirim ke mesin pencari) dan memakai Google
+Programmable Search bila pengguna mengisi API key + Search Engine ID
+di Settings (disimpan di Keychain), dengan fallback DuckDuckGo HTML +
+Wikipedia tanpa API key. Model Manager punya katalog model
 terkurasi (9 model, lengkap dengan keterangan kegunaan) dan
 downloader segmen paralel ala download manager (koneksi 1–60, maks 2
 file bersamaan, tahan jeda/gagal). Redesign UI/UX menyeluruh belum
