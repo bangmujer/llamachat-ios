@@ -16,6 +16,7 @@ public struct SettingsView: View {
     @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
     @AppStorage("llamachat.agentEnabled") private var agentEnabled = true
     @AppStorage("llamachat.voiceModeEnabled") private var voiceModeEnabled = false
+    @AppStorage("llamachat.skipThinking") private var skipThinking = false
     @State private var hapticsEnabled = true
 
     @State private var googleApiKey = ""
@@ -74,6 +75,17 @@ public struct SettingsView: View {
                         .onChange(of: hapticsEnabled) { _, newValue in
                             Haptics.setEnabled(newValue)
                         }
+                }
+
+                Section("Berpikir") {
+                    Toggle(isOn: $skipThinking) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Lewati proses berpikir")
+                            Text("Qwen3 menjawab langsung tanpa blok penalaran panjang di awal — lebih cepat dan menghemat token. Bila nonaktif, penalaran tetap ditampilkan terlipat di bawah \"Proses berpikir\". Model yang tidak mendukung konvensi ini tetap boleh menampilkan blok berpikir.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section("Suara") {
