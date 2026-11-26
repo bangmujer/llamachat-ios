@@ -72,3 +72,22 @@ public enum ThinkBlock {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+/// Preferensi melewati proses berpikir model.
+///
+/// Qwen3 adalah model hibrida: secara bawaan ia mengeluarkan blok
+/// `<think>` panjang sebelum menjawab. Menambahkan `/no_think` di
+/// akhir pesan pengguna adalah konvensi resmi Qwen3 untuk meminta
+/// model menjawab langsung tanpa blok tersebut — lebih cepat dan
+/// menghemat token. Ini preferensi pengguna, bukan instruksi yang
+/// mengubah bobot model: model lain (atau Qwen3 yang mengabaikan
+/// konvensi ini) tetap boleh mengeluarkan blok think, yang tetap
+/// ditampilkan terlipat seperti biasa.
+public enum ThinkingPreference {
+    public static let skipThinkingDefaultsKey = "llamachat.skipThinking"
+
+    public static var skipThinking: Bool {
+        get { UserDefaults.standard.bool(forKey: skipThinkingDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: skipThinkingDefaultsKey) }
+    }
+}
