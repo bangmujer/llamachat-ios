@@ -355,7 +355,11 @@ public final class ChatViewModel: ObservableObject {
             // Lampiran pesan pengguna (Build 2) ditempel sebagai blok
             // konteks teks ke isi pesan — model teks tidak bisa membaca
             // file/gambar, hanya teks hasil ekstraksinya.
-            let history = messages.filter { $0.id != assistantId }
+            // Preferensi "Lewati proses berpikir": `/no_think` ditempel
+            // di akhir pesan pengguna TERAKHIR pada salinan render ini
+            // saja (bukan pesan tersimpan) — konvensi Qwen3 untuk
+            // menjawab langsung tanpa blok <think>.
+            var history = messages.filter { $0.id != assistantId }
                 .map { message -> ChatMessage in
                     let stripped = ThinkBlock.stripped(message.content)
                     guard message.role == .user, !message.attachments.isEmpty else {
@@ -366,6 +370,13 @@ public final class ChatViewModel: ObservableObject {
                     return ChatMessage(id: message.id, role: message.role, content: content)
                 }
                 .filter { !($0.role == .assistant && $0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            if ThinkingPreference.skipThinking,
+               let lastUserIndex = history.lastIndex(where: { $0.role == .user }) {
+                let last = history[lastUserIndex]
+                history[lastUserIndex] = ChatMessage(
+                    id: last.id, role: last.role, content: last.content + "\n/no_think"
+                )
+            }
             var prompt = ChatTemplate.render(
                 kind: ChatTemplate.resolve(kind: templateKind, metadata: loadedDescriptor?.chatTemplate),
                 systemPrompt: systemPrompt,
