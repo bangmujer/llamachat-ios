@@ -54,6 +54,12 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         public var speedBytesPerSec: Double
         public var segmentsDone: Int
         public var segmentCount: Int
+        /// Segmen yang sedang dikerjakan task download yang masih hidup.
+        public var activeSegments: Int
+        /// Fraksi terisi per segmen (0...1), seurutan dengan segmen.
+        /// Segmen selesai = 1, segmen yang task-nya berjalan = progres
+        /// task itu, sisanya 0. Dipakai strip progres per segmen di UI.
+        public var segmentFractions: [Double]
         public var errorMessage: String?
     }
 
@@ -89,11 +95,20 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         var state: ItemState
         var taskSegments: [Int: Int] = [:]
         var inFlightBytes: [Int: Int64] = [:]
+        /// Jumlah percobaan ulang per segmen (kunci: indeks segmen).
+        /// Satu segmen yang error koneksi dicoba lagi sampai batas ini
+        /// sebelum seluruh download dinyatakan gagal.
+        var retryCounts: [Int: Int] = [:]
         var errorMessage: String?
         var lastSampleAt: Date = Date()
         var lastSampleBytes: Int64 = 0
         var speedBytesPerSec: Double = 0
     }
+
+    /// Satu segmen yang gagal (timeout, koneksi putus) dicoba lagi
+    /// sebanyak ini sebelum download dinyatakan gagal. Segmen yang
+    /// sudah selesai tidak pernah diulang.
+    private static let maxSegmentRetries = 3
 
     private let workQueue = DispatchQueue(label: "com.bangmujer.llamachat.downloads")
     private var records: [UUID: DownloadRecord] = [:]
@@ -324,22 +339,34 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         return min(Self.maxConnections, max(1, value))
     }
 
+    /// Buat task download untuk satu segmen (Range kalau server
+    /// mendukungnya, utuh kalau tidak). Task belum di-resume; pemanggil
+    /// mendaftarkannya di `runtime.taskSegments` lalu me-resume.
+    private func makeSegmentTask(id: UUID, index: Int) -> URLSessionDownloadTask? {
+        guard let record = records[id], let url = URL(string: record.urlString),
+              record.segments.indices.contains(index)
+        else { return nil }
+        let segment = record.segments[index]
+        let request: URLRequest
+        if record.rangesSupported {
+            var ranged = URLRequest(url: url)
+            ranged.cachePolicy = .reloadIgnoringLocalCacheData
+            ranged.setValue("bytes=\(segment.start)-\(segment.end)", forHTTPHeaderField: "Range")
+            request = ranged
+        } else {
+            request = URLRequest(url: url)
+        }
+        let task = session.downloadTask(with: request)
+        task.taskDescription = "\(id.uuidString)|\(index)"
+        return task
+    }
+
     private func startSegmentTasks(id: UUID) {
-        guard var runtime = runtimes[id], let record = records[id],
-              let url = URL(string: record.urlString) else { return }
+        guard var runtime = runtimes[id], let record = records[id] else { return }
         runtime.state = .downloading
+        runtime.retryCounts.removeAll()
         for (index, segment) in record.segments.enumerated() where !segment.completed {
-            let request: URLRequest
-            if record.rangesSupported {
-                var ranged = URLRequest(url: url)
-                ranged.cachePolicy = .reloadIgnoringLocalCacheData
-                ranged.setValue("bytes=\(segment.start)-\(segment.end)", forHTTPHeaderField: "Range")
-                request = ranged
-            } else {
-                request = URLRequest(url: url)
-            }
-            let task = session.downloadTask(with: request)
-            task.taskDescription = "\(id.uuidString)|\(index)"
+            guard let task = makeSegmentTask(id: id, index: index) else { continue }
             runtime.taskSegments[task.taskIdentifier] = index
             task.resume()
         }
@@ -443,6 +470,7 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         else { return }
         runtime.taskSegments.removeValue(forKey: task.taskIdentifier)
         runtime.inFlightBytes.removeValue(forKey: task.taskIdentifier)
+        runtime.retryCounts.removeValue(forKey: index)
 
         if let http = task.response as? HTTPURLResponse, http.statusCode == 200, record.rangesSupported {
             // Server mengabaikan Range dan mengirim file utuh: pakai
@@ -601,6 +629,21 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
             } else {
                 progress = 0
             }
+            // Fraksi per segmen untuk strip progres: segmen selesai = 1,
+            // segmen yang task-nya hidup = byte task itu / panjang segmen.
+            var fractions = record.segments.map { $0.completed ? 1.0 : 0.0 }
+            for (taskID, index) in runtime.taskSegments {
+                guard record.segments.indices.contains(index), !record.segments[index].completed,
+                      let bytes = runtime.inFlightBytes[taskID]
+                else { continue }
+                let segment = record.segments[index]
+                let length = segment.end >= segment.start
+                    ? segment.end - segment.start + 1
+                    : total
+                if length > 0 {
+                    fractions[index] = min(1, Double(bytes) / Double(length))
+                }
+            }
             items.append(DownloadItem(
                 id: id, url: url, fileName: record.fileName,
                 state: runtime.state, progress: progress,
@@ -608,6 +651,8 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
                 speedBytesPerSec: runtime.speedBytesPerSec,
                 segmentsDone: record.segments.filter { $0.completed }.count,
                 segmentCount: record.segments.count,
+                activeSegments: runtime.taskSegments.count,
+                segmentFractions: fractions,
                 errorMessage: runtime.errorMessage
             ))
         }
@@ -672,8 +717,31 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
                   var runtime = self.runtimes[id], self.records[id] != nil
             else { return }
             guard runtime.state == .downloading else { return }
+            let segmentIndex = runtime.taskSegments[task.taskIdentifier]
             runtime.taskSegments.removeValue(forKey: task.taskIdentifier)
             runtime.inFlightBytes.removeValue(forKey: task.taskIdentifier)
+            // Satu segmen yang error (timeout/koneksi putus) dicoba
+            // lagi sendiri sampai batas retry — segmen lain yang sedang
+            // berjalan TIDAK dibatalkan, dan segmen yang sudah selesai
+            // tetap tersimpan. Baru kalau retry habis, seluruh download
+            // dinyatakan gagal dan pengguna bisa Lanjutkan manual.
+            if let segmentIndex,
+               let record = self.records[id],
+               record.segments.indices.contains(segmentIndex),
+               !record.segments[segmentIndex].completed {
+                let attempts = runtime.retryCounts[segmentIndex, default: 0]
+                if attempts < Self.maxSegmentRetries {
+                    runtime.retryCounts[segmentIndex] = attempts + 1
+                    self.runtimes[id] = runtime
+                    if let retryTask = self.makeSegmentTask(id: id, index: segmentIndex) {
+                        runtime.taskSegments[retryTask.taskIdentifier] = segmentIndex
+                        self.runtimes[id] = runtime
+                        retryTask.resume()
+                    }
+                    self.publish()
+                    return
+                }
+            }
             runtime.state = .failed
             runtime.errorMessage = "Download gagal: \(error.localizedDescription) Segmen yang sudah selesai tersimpan — tekan Lanjutkan untuk mencoba lagi."
             self.cancelTasks(for: id, runtime: &runtime)
