@@ -21,6 +21,9 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources
+      # Atribut Live Activity dipakai bersama widget extension: file ini
+      # juga menjadi source target LlamaChatLiveActivity (lihat bawah).
+      - path: LiveActivity/DownloadActivityAttributes.swift
     # llama.xcframework DIBANGUN di CI (lihat .github/workflows/build-ipa.yml)
     # dan diletakkan di ThirdParty/llama.xcframework SEBELUM `xcodegen generate`.
     # XcodeGen menangani Framework Search Paths + embedding dari deklarasi ini;
@@ -30,6 +33,9 @@ targets:
         embed: true
       - package: ZIPFoundation
         product: ZIPFoundation
+      # Widget extension Live Activity (Dynamic Island): XcodeGen membuat
+      # fase "Embed App Extensions" dari dependensi target ini.
+      - target: LlamaChatLiveActivity
     # PELAJARAN dari proyek MDM (2026-11-23): XcodeGen MENIMPA Info.plist
     # di info.path pada setiap `xcodegen generate`. Kunci custom WAJIB di sini,
     # bukan hanya di file Info.plist tulisan tangan.
@@ -103,4 +109,37 @@ targets:
         # TIDAK ADA bridging header untuk llama.cpp di proyek ini.
         # Swift 6 mode TIDAK diaktifkan di Fase A: kode actor + C pointer
         # ditulis untuk Swift 5.9. Jangan naikkan tanpa audit Sendable.
+        SWIFT_APPROACHABLE_CONCURRENCY: NO
+  # Widget extension Live Activity download (Dynamic Island + Lock
+  # Screen). UI-nya tinggal di sini; app utama yang meminta /
+  # memperbarui / mengakhiri activity lewat ActivityKit. Bundle ID
+  # harus berawalan bundle ID app. Tanpa signing di CI, sama seperti
+  # target utama: IPA unsigned untuk TrollStore. Apakah extension
+  # termuat di install unsigned HARUS dibuktikan tes on-device.
+  LlamaChatLiveActivity:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: LiveActivity
+    info:
+      path: LiveActivity/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: "LlamaChatLiveActivity"
+        PRODUCT_BUNDLE_IDENTIFIER: com.bangmujer.llamachat.liveactivity
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
         SWIFT_APPROACHABLE_CONCURRENCY: NO
