@@ -14,6 +14,7 @@ public struct SettingsView: View {
     @ObservedObject var viewModel: ChatViewModel
 
     @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
+    @AppStorage("llamachat.agentEnabled") private var agentEnabled = true
     @State private var hapticsEnabled = true
 
     @State private var googleApiKey = ""
@@ -75,6 +76,14 @@ public struct SettingsView: View {
                 }
 
                 Section("Agent & Tools") {
+                    Toggle(isOn: $agentEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Mode Agen")
+                            Text("Bila nonaktif, chat menjawab langsung tanpa langkah memutuskan tool — lebih cepat. Pilihan tool di bawah tetap tersimpan.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Text("Tools hanya yang bisa dilakukan app iOS biasa. App tidak bisa membaca isi aplikasi lain dan tidak bisa mengubah pengaturan sistem. Tool tulis selalu minta konfirmasi sebelum dijalankan.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -90,6 +99,7 @@ public struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .disabled(!agentEnabled)
                     }
                     Text("Tool yang nonaktif tidak ditawarkan ke model. Tool baca yang butuh izin (Kalender, Kontak) meminta izin iOS saat pertama dipakai. Tool internet (Cari di internet, Buka halaman web) mengirim query/URL ke mesin pencari dan situs terkait — nonaktif secara default, aktifkan sendiri bila perlu.")
                         .font(.footnote)
