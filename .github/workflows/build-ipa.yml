@@ -8,6 +8,8 @@ on:
 jobs:
   build-ipa:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -58,3 +60,15 @@ jobs:
           name: llamachat-ios-unsigned-ipa
           path: build/ipa/*.ipa
           retention-days: 30
+
+      # Release bergulir: setiap build hijau di main menimpa aset di
+      # release tag "latest", jadi link download-nya tetap sama.
+      # Butuh permissions contents: write di job ini.
+      - name: Publish rolling release (latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Latest build" --notes "Build terbaru dari branch main (otomatis). IPA unsigned, install via TrollStore." --prerelease
+          fi
+          gh release upload latest build/ipa/*.ipa --clobber
