@@ -92,7 +92,12 @@ public struct ModelManagerView: View {
                         .autocorrectionDisabled()
                     TextField("Ukuran yang diharapkan (MB, opsional)", text: $expectedSizeMBText)
                         .keyboardType(.numberPad)
-                    Stepper("Koneksi per file: \(connections)", value: $connections, in: 1...ModelDownloadManager.maxConnections)
+                    Picker("Koneksi per file", selection: $connections) {
+                        ForEach(1...ModelDownloadManager.maxConnections, id: \.self) { value in
+                            Text("\(value)").tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
                     Text("File dipecah menjadi segmen sebanyak koneksi dan diunduh bersamaan, seperti download manager. Lebih banyak tidak selalu lebih cepat — server dan jaringan yang membatasi. Pengaturan ini berlaku untuk download yang baru dimulai.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
