@@ -44,6 +44,11 @@ targets:
         NSCalendarsUsageDescription: "LlamaChat memakai kalender hanya saat kamu meminta lewat agent (mis. melihat jadwal atau membuat acara)."
         NSRemindersUsageDescription: "LlamaChat membuat pengingat hanya saat kamu meminta lewat agent."
         NSContactsUsageDescription: "LlamaChat mencari kontak hanya saat kamu meminta lewat agent."
+        # Izin voice note Build 2: mikrofon untuk merekam, pengenalan
+        # ucapan untuk mengubah rekaman menjadi teks. Keduanya hanya
+        # dipakai saat pengguna menekan tombol mic di composer.
+        NSMicrophoneUsageDescription: "LlamaChat memakai mikrofon untuk merekam voice note yang ditranskripsi menjadi pesan."
+        NSSpeechRecognitionUsageDescription: "LlamaChat mengubah voice note menjadi teks memakai pengenalan ucapan iOS."
         # Deklarasi tipe dokumen GGUF (2026-11-26): tanpa ini, iOS tidak
         # mengenal ekstensi .gguf — Files tidak menawarkan "Buka di
         # LlamaChat" dan document picker bisa menonaktifkan file .gguf.
