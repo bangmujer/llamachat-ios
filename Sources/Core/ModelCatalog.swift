@@ -81,6 +81,19 @@ public enum ModelCatalog {
             note: "±400 MB lebih besar dari Q4_K_M dan sedikit lebih lambat. Satu-satunya upgrade yang masih muat di guard 3,8 GB."
         ),
         CatalogModel(
+            id: "qwen3-4b-instruct-2507-abliterated-q4_k_m",
+            name: "Qwen3 4B Instruct 2507 Abliterated",
+            quant: "Q4_K_M",
+            fileName: "Qwen3-4B-Instruct-2507-abliterated.Q4_K_M.gguf",
+            url: URL(string: "https://huggingface.co/mradermacher/Qwen3-4B-Instruct-2507-abliterated-GGUF/resolve/main/Qwen3-4B-Instruct-2507-abliterated.Q4_K_M.gguf")!,
+            sizeDisplay: "2,50 GB",
+            exactSizeBytes: nil,
+            ramEstimateDisplay: "±3,1 GB",
+            tagline: "Qwen3 4B versi uncensored (abliterated).",
+            strengths: "Chat harian seperti Qwen3 4B, tanpa perilaku refusal bawaan.",
+            note: "Abliterasi huihui-ai atas Qwen3-4B-Instruct-2507 (arah refusal dihapus dari bobot; proof-of-concept, bukan jaminan refusal hilang total). Kemampuan sama dengan Qwen3 4B. Bukan model resmi Qwen."
+        ),
+        CatalogModel(
             id: "qwen25-3b-q4_k_m",
             name: "Qwen2.5 3B Instruct",
             quant: "Q4_K_M",
