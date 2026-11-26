@@ -1,5 +1,6 @@
 import ActivityKit
 import Foundation
+import UIKit
 
 /// Download model GGUF dengan segmen paralel ala download manager
 /// (mirip MDM): satu file dipecah menjadi N segmen yang diunduh
@@ -24,15 +25,20 @@ import Foundation
 /// hilang saat dibatalkan, jadi Jeda di tengah segmen ~125 MB terlihat
 /// seperti "file hilang, download ulang".)
 ///
-/// Latar belakang: session ini background `URLSession` dengan
-/// identifier stabil, jadi transfer diteruskan sistem selagi app di
-/// background dan app dibangunkan untuk menerima byte-nya
-/// (`AppDelegate` meneruskan completion handler sistem ke manager
-/// ini). Callback delegate berjalan di antrean serial yang sama
-/// dengan semua mutasi state (`workQueue`), jadi tidak ada balapan
-/// antara byte yang masuk dan Jeda/Batal. Saat app diluncurkan ulang,
-/// task yang masih hidup diadopsi kembali (bukan dibatalkan), dan
-/// download yang tidak punya task hidup dipulihkan sebagai terjeda.
+/// Latar belakang & kecepatan: session ini FOREGROUND
+/// (`URLSessionConfiguration.default`). Background `URLSession`
+/// di pacing daemon sistem dan terbukti jauh lebih lambat di
+/// jaringan/server yang sama (170 KB/dtk vs 1,1 MB/dtk di MDM),
+/// jadi kecepatan penuh hanya didapat dari sesi foreground.
+/// Sebagai gantinya, saat app pindah ke background, download yang
+/// aktif di-jeda otomatis (byte tersimpan, berkat desain resume
+/// per byte) dan dilanjutkan otomatis saat app kembali ke
+/// foreground; assertion background memberi jendela ekstra.
+/// Callback delegate berjalan di antrean serial yang sama dengan
+/// semua mutasi state (`workQueue`), jadi tidak ada balapan antara
+/// byte yang masuk dan Jeda/Batal. Saat app diluncurkan ulang,
+/// download yang belum selesai dipulihkan sebagai terjeda dari
+/// state.json dan bisa dilanjutkan manual.
 ///
 /// Kalau server tidak mendukung Range (status 200, bukan 206), manager
 /// otomatis jatuh ke satu download utuh tanpa segmen. File tujuan yang
@@ -142,7 +148,16 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
     private var runtimes: [UUID: Runtime] = [:]
     private var order: [UUID] = []
     private var lastPublishAt = Date.distantPast
-    private var backgroundCompletionHandlers: [String: () -> Void] = [:]
+
+    /// Download yang di-jeda otomatis saat app pindah ke background,
+    /// untuk dilanjutkan otomatis saat kembali ke foreground. Jeda
+    /// manual pengguna TIDAK pernah masuk ke sini.
+    private var autoPausedIDs: Set<UUID> = []
+    /// True sejak didEnterBackground sampai willEnterForeground.
+    /// Dipakai failItem: download yang gagal selagi background ikut
+    /// ditandai untuk lanjut otomatis.
+    private var isInBackground = false
+    private var lastDownloadsActiveFlag = false
 
     // MARK: - Live Activity (Dynamic Island)
 
@@ -164,11 +179,14 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
     private let delegateQueue = OperationQueue()
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.background(
-            withIdentifier: "com.bangmujer.llamachat.model-download"
-        )
-        config.isDiscretionary = false
-        config.sessionSendsLaunchEvents = true
+        // Sesi FOREGROUND (bukan background): background URLSession
+        // di pacing sistem (daemon) sehingga kecepatannya jauh di
+        // bawah sesi foreground di jaringan/server yang sama — persis
+        // selisih yang terlihat melawan MDM (170 KB/dtk vs 1,1 MB/dtk).
+        // Sesi foreground memberi kecepatan penuh selagi app aktif;
+        // saat app pindah ke background, download di-jeda otomatis
+        // (byte tersimpan) dan dilanjutkan otomatis saat kembali.
+        let config = URLSessionConfiguration.default
         config.httpMaximumConnectionsPerHost = Self.maxConnections
         delegateQueue.maxConcurrentOperationCount = 1
         delegateQueue.underlyingQueue = workQueue
@@ -177,14 +195,25 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.workQueue.async { self?.enterBackground() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.workQueue.async { self?.enterForeground() }
+        }
         workQueue.async { [weak self] in
             guard let self else { return }
             // Pulihkan download yang belum selesai sebagai terjeda
-            // dari state.json, lalu adopsi kembali task background
-            // yang masih hidup (mis. app dibangunkan sistem untuk
-            // menerima byte) — task yatim tanpa catatan dibatalkan.
+            // dari state.json. Sesi foreground tidak punya task yang
+            // bertahan melewati proses mati, jadi tidak ada yang
+            // diadopsi — Lanjutkan memulai lagi dari byte terakhir.
             self.restoreInterruptedDownloads()
-            self.adoptLiveTasks()
             self.publish()
         }
     }
@@ -255,24 +284,66 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
     public func resumeDownload(id: UUID) {
         BackgroundSupport.ensureNotificationAuthorization()
         workQueue.async { [weak self] in
-            guard let self, var runtime = self.runtimes[id], let record = self.records[id] else { return }
-            guard runtime.state == .paused || runtime.state == .failed else { return }
+            self?.resumeOnQueue(id: id, allowedStates: [.paused, .failed])
+        }
+    }
+
+    /// Inti resume, di `workQueue`. Dipakai tombol Lanjutkan dan
+    /// lanjut-otomatis saat kembali dari background.
+    private func resumeOnQueue(id: UUID, allowedStates: [ItemState]) {
+        guard var runtime = runtimes[id], let record = records[id],
+              allowedStates.contains(runtime.state)
+        else { return }
+        runtime.errorMessage = nil
+        if record.segments.isEmpty {
+            runtime.state = .probing
+            runtimes[id] = runtime
+            publish()
+            if let url = URL(string: record.urlString) {
+                probe(url: url, id: id)
+            }
+            return
+        }
+        runtime.state = activeDownloadCount() < Self.maxConcurrentDownloads ? .downloading : .queued
+        runtimes[id] = runtime
+        publish()
+        if runtime.state == .downloading {
+            startSegmentTasks(id: id)
+        }
+    }
+
+    // MARK: - Jeda/lanjut otomatis latar belakang
+
+    /// App pindah ke background: jeda semua download aktif. Sesi
+    /// foreground tidak bertahan melewati suspensi proses, dan
+    /// membiarkan task menggantung hanya membuat mereka gagal tanpa
+    /// kepastian — jeda eksplisit menyimpan byte dan state dengan
+    /// bersih. Download yang di-jeda di sini dilanjutkan otomatis
+    /// di `enterForeground`.
+    private func enterBackground() {
+        isInBackground = true
+        var changed = false
+        for id in order {
+            guard var runtime = runtimes[id],
+                  runtime.state == .downloading || runtime.state == .probing || runtime.state == .verifying
+            else { continue }
+            cancelTasks(for: id, runtime: &runtime)
+            runtime.state = .paused
             runtime.errorMessage = nil
-            if record.segments.isEmpty {
-                runtime.state = .probing
-                self.runtimes[id] = runtime
-                self.publish()
-                if let url = URL(string: record.urlString) {
-                    self.probe(url: url, id: id)
-                }
-                return
-            }
-            runtime.state = self.activeDownloadCount() < Self.maxConcurrentDownloads ? .downloading : .queued
-            self.runtimes[id] = runtime
-            self.publish()
-            if runtime.state == .downloading {
-                self.startSegmentTasks(id: id)
-            }
+            runtimes[id] = runtime
+            autoPausedIDs.insert(id)
+            persistRecord(id: id)
+            changed = true
+        }
+        if changed { publish() }
+    }
+
+    private func enterForeground() {
+        isInBackground = false
+        let ids = order.filter { autoPausedIDs.contains($0) }
+        autoPausedIDs.removeAll()
+        for id in ids {
+            resumeOnQueue(id: id, allowedStates: [.paused, .failed])
         }
     }
 
@@ -285,17 +356,11 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
             }
             self.records.removeValue(forKey: id)
             self.runtimes.removeValue(forKey: id)
+            self.autoPausedIDs.remove(id)
             self.order.removeAll { $0 == id }
             self.publish()
             self.startNextQueued()
         }
-    }
-
-    /// Dipanggil AppDelegate saat iOS membangunkan app untuk background
-    /// session yang sudah selesai. Handler disimpan sampai
-    /// `urlSessionDidFinishEvents` memanggilnya.
-    public func setBackgroundCompletionHandler(_ handler: @escaping () -> Void, for identifier: String) {
-        backgroundCompletionHandlers[identifier] = handler
     }
 
     // MARK: - Probe + segmen
@@ -558,38 +623,6 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         }
     }
 
-    /// Adopsi task background yang masih hidup (app dibangunkan sistem
-    /// untuk menerima byte): task yang catatannya ada dan segmennya
-    /// belum selesai didaftarkan kembali dan download-nya berjalan
-    /// lagi. Task yatim — tanpa catatan, atau dari format lama
-    /// (`URLSessionDownloadTask`) — dibatalkan; byte segmen yang
-    /// sudah selesai tetap tersimpan dan bisa dilanjutkan manual.
-    private func adoptLiveTasks() {
-        session.getAllTasks { [weak self] tasks in
-            guard let self else { return }
-            self.workQueue.async {
-                for task in tasks {
-                    guard let (id, index) = Self.parseTaskDescription(task.taskDescription),
-                          var runtime = self.runtimes[id],
-                          let record = self.records[id],
-                          record.segments.indices.contains(index),
-                          !record.segments[index].completed,
-                          let dataTask = task as? URLSessionDataTask
-                    else {
-                        task.cancel()
-                        continue
-                    }
-                    runtime.tasks[index] = dataTask
-                    if runtime.state == .paused {
-                        runtime.state = .downloading
-                    }
-                    self.runtimes[id] = runtime
-                }
-                self.publish()
-            }
-        }
-    }
-
     private static func parseTaskDescription(_ description: String?) -> (UUID, Int)? {
         guard let description,
               let separator = description.firstIndex(of: "|"),
@@ -812,6 +845,12 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         cancelTasks(for: id, runtime: &runtime)
         runtime.state = .failed
         runtime.errorMessage = message
+        // Gagal selagi app di background (mis. suspensi mematikan
+        // koneksi sebelum jeda-otomatis sempat jalan): tandai untuk
+        // lanjut otomatis saat kembali ke foreground, seperti jeda.
+        if isInBackground {
+            autoPausedIDs.insert(id)
+        }
         runtimes[id] = runtime
         persistRecord(id: id)
         publish()
@@ -953,6 +992,18 @@ public final class ModelDownloadManager: NSObject, ObservableObject {
         lastPublishAt = now
         let snapshot = items
         syncLiveActivity(with: snapshot)
+        // Assertion background selagi ada download aktif: memberi
+        // waktu ekstra saat app baru pindah ke background, sebelum
+        // jeda-otomatis bekerja. Hanya panggil saat nilainya berubah.
+        let downloadsActive = items.contains {
+            $0.state == .downloading || $0.state == .probing || $0.state == .verifying
+        }
+        if downloadsActive != lastDownloadsActiveFlag {
+            lastDownloadsActiveFlag = downloadsActive
+            Task { @MainActor in
+                BackgroundSupport.setDownloadsActive(downloadsActive)
+            }
+        }
         if Thread.isMainThread {
             downloads = snapshot
         } else {
@@ -1098,13 +1149,5 @@ extension ModelDownloadManager: URLSessionDataDelegate {
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         handleCompletion(task: task, error: error)
-    }
-
-    public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        let identifier = session.configuration.identifier
-        guard let identifier,
-              let handler = backgroundCompletionHandlers.removeValue(forKey: identifier)
-        else { return }
-        DispatchQueue.main.async { handler() }
     }
 }
