@@ -50,6 +50,30 @@ public struct CatalogModel: Identifiable, Equatable, Sendable {
         self.strengths = strengths
         self.note = note
     }
+
+    /// Pemilik repo Hugging Face (namespace pertama pada path URL),
+    /// mis. "bartowski" atau "Qwen". Dipakai untuk ikon model dari
+    /// server. Nil kalau URL bukan repo Hugging Face.
+    public var owner: String? {
+        guard url.host == "huggingface.co" else { return nil }
+        let parts = url.pathComponents
+        guard parts.count >= 2 else { return nil }
+        let owner = parts[1]
+        return owner.isEmpty ? nil : owner
+    }
+
+    /// URL avatar publisher dari server Hugging Face. Endpoint
+    /// tunggal `/api/avatars/{namespace}` berlaku untuk user maupun
+    /// organisasi dan merespons redirect ke gambar avatarnya — jadi
+    /// setiap model mendapat ikon langsung dari server, tanpa
+    /// perlu daftar URL ikon per model. Nil kalau URL bukan repo
+    /// Hugging Face.
+    public var avatarURL: URL? {
+        guard let owner,
+              let encoded = owner.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        return URL(string: "https://huggingface.co/api/avatars/\(encoded)")
+    }
 }
 
 public enum ModelCatalog {
