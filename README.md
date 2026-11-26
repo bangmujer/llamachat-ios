@@ -29,7 +29,10 @@ file bersamaan, tahan jeda/gagal, retry otomatis 3x per segmen yang
 error, strip progres per segmen, resume per byte: Jeda tidak
 menghilangkan byte yang sudah diterima). Download dan chat berjalan
 di latar belakang (background URLSession + assertion generation,
-notifikasi lokal saat selesai di background). Redesign UI/UX menyeluruh belum
+notifikasi lokal saat selesai di background). Download yang sedang
+berjalan tampil sebagai Live Activity di Dynamic Island + Lock Screen
+(widget extension; butuh tes on-device di install unsigned/TrollStore).
+Redesign UI/UX menyeluruh belum
 dikerjakan (terakhir, sesuai arahan pengguna). Lihat bagian "Peta
 fase" di bawah.
 
