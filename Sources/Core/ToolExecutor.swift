@@ -278,6 +278,10 @@ public final class ToolExecutor {
             return "Gagal: argumen 'query' (kata kunci pencarian) wajib diisi."
         }
         let limit = min(max(count, 1), 8)
+        if WebSearchSettings.isGoogleConfigured,
+           let results = await googleSearch(query: trimmed, limit: limit), !results.isEmpty {
+            return truncate(formatWebResults(results, query: trimmed))
+        }
         if let results = await duckDuckGoSearch(query: trimmed, limit: limit), !results.isEmpty {
             return truncate(formatWebResults(results, query: trimmed))
         }
@@ -293,6 +297,43 @@ public final class ToolExecutor {
             return "\(index + 1). \(result.title)\n   \(snippet)\n   Sumber: \(result.url)"
         }
         return "Hasil pencarian untuk '\(query)':\n" + lines.joined(separator: "\n")
+    }
+
+    /// Pencarian Google via Programmable Search (Custom Search JSON API).
+    ///
+    /// Hanya dipakai kalau pengguna mengisi API key + Search Engine ID
+    /// di Settings (disimpan di Keychain). Gagal apa pun — kunci belum
+    /// diisi, kuota habis, error API — mengembalikan nil supaya
+    /// `webSearch` jatuh ke DuckDuckGo/Wikipedia, bukan mengarang
+    /// hasil. Kunci tidak pernah ditulis ke log.
+    private func googleSearch(query: String, limit: Int) async -> [WebResult]? {
+        let apiKey = WebSearchSettings.apiKey
+        let engineID = WebSearchSettings.engineID
+        guard !apiKey.isEmpty, !engineID.isEmpty else { return nil }
+        var components = URLComponents(string: "https://www.googleapis.com/customsearch/v1")
+        components?.queryItems = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "cx", value: engineID),
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "num", value: String(limit)),
+        ]
+        guard let url = components?.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let items = json["items"] as? [[String: Any]] else { return nil }
+            let results = items.compactMap { item -> WebResult? in
+                guard let title = item["title"] as? String, !title.isEmpty,
+                      let link = item["link"] as? String, !link.isEmpty else { return nil }
+                return WebResult(title: title, snippet: item["snippet"] as? String ?? "", url: link)
+            }
+            return results.isEmpty ? nil : results
+        } catch {
+            return nil
+        }
     }
 
     private func duckDuckGoSearch(query: String, limit: Int) async -> [WebResult]? {
