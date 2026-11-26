@@ -28,6 +28,8 @@ public enum AgentTool: String, CaseIterable, Identifiable, Sendable {
     case createReminder
     case searchContacts
     case runShortcut
+    case webSearch
+    case webFetch
 
     public var id: String { rawValue }
 
@@ -40,6 +42,8 @@ public enum AgentTool: String, CaseIterable, Identifiable, Sendable {
         case .createReminder: return "Buat pengingat"
         case .searchContacts: return "Cari kontak"
         case .runShortcut: return "Jalankan Shortcut"
+        case .webSearch: return "Cari di internet"
+        case .webFetch: return "Buka halaman web"
         }
     }
 
@@ -52,6 +56,8 @@ public enum AgentTool: String, CaseIterable, Identifiable, Sendable {
         case .createReminder: return "Membuat pengingat baru. Selalu minta konfirmasi."
         case .searchContacts: return "Mencari nama di kontak. Memerlukan izin Kontak."
         case .runShortcut: return "Menjalankan Shortcut buatan pengguna lewat aplikasi Shortcuts. Selalu minta konfirmasi."
+        case .webSearch: return "Mencari referensi/informasi terbaru di internet. Query dikirim ke mesin pencari."
+        case .webFetch: return "Mengambil isi teks sebuah halaman web (https, publik)."
         }
     }
 
@@ -78,6 +84,10 @@ public enum AgentTool: String, CaseIterable, Identifiable, Sendable {
             return #"{"query": "nama yang dicari, wajib"}"#
         case .runShortcut:
             return #"{"name": "nama Shortcut persis seperti di aplikasi Shortcuts, wajib"}"#
+        case .webSearch:
+            return #"{"query": "kata kunci pencarian, wajib", "count": angka 1-8, opsional, default 5}"#
+        case .webFetch:
+            return #"{"url": "URL https halaman yang dibuka, wajib. Pakai URL dari hasil webSearch atau dari pesan pengguna; jangan mengarang URL."}"#
         }
     }
 
@@ -109,6 +119,7 @@ public enum ToolPrompt {
         - Satu tool per balasan. Isi argumen dengan data dari pesan pengguna; jangan mengarang tanggal, nama, atau isi yang tidak disebutkan.
         - Kalau tidak perlu tool, JANGAN menulis JSON sama sekali — jawab langsung dengan teks biasa.
         - Jangan pernah mengklaim sudah menjalankan tool; hasil tool akan diberikan kepadamu setelah tool dijalankan.
+        \(tools.contains(.webSearch) || tools.contains(.webFetch) ? "- Kalau jawaban memakai hasil webSearch/webFetch, cantumkan URL sumbernya di akhir jawaban. Jangan mengarang URL yang tidak ada di hasil tool." : "")
         """
     }
 }
@@ -136,7 +147,7 @@ public enum ToolPreferences {
         switch tool {
         case .currentTime, .deviceInfo, .calendarEvents, .searchContacts:
             return true
-        case .createCalendarEvent, .createReminder, .runShortcut:
+        case .createCalendarEvent, .createReminder, .runShortcut, .webSearch, .webFetch:
             return false
         }
     }
