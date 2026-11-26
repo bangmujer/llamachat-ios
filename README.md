@@ -14,7 +14,9 @@ lebih cepat). Build 2: lampiran gambar (OCR Vision on-device) dan
 file teks/PDF (ekstraksi isi) yang ditempel sebagai konteks prompt,
 voice note (rekam + transkripsi pengenalan ucapan iOS, playback),
 TTS tombol speaker di jawaban asisten, dan mode suara turn-based
-(rekam → kirim otomatis → jawaban dibacakan). Tool internet nonaktif secara
+(rekam → kirim otomatis → jawaban dibacakan). Lampiran file juga
+menerima arsip `.zip`: entrinya diekstrak on-device (ZIPFoundation)
+dan semua file teks/source code dibaca sebagai konteks prompt. Tool internet nonaktif secara
 default (query dikirim ke mesin pencari) dan memakai Google
 Programmable Search bila pengguna mengisi API key + Search Engine ID
 di Settings (disimpan di Keychain), dengan fallback DuckDuckGo (dua
