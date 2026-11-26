@@ -15,6 +15,7 @@ public struct SettingsView: View {
 
     @AppStorage("llamachat.colorScheme") private var colorSchemeChoice = AppearanceChoice.system.rawValue
     @AppStorage("llamachat.agentEnabled") private var agentEnabled = true
+    @AppStorage("llamachat.voiceModeEnabled") private var voiceModeEnabled = false
     @State private var hapticsEnabled = true
 
     @State private var googleApiKey = ""
@@ -73,6 +74,20 @@ public struct SettingsView: View {
                         .onChange(of: hapticsEnabled) { _, newValue in
                             Haptics.setEnabled(newValue)
                         }
+                }
+
+                Section("Suara") {
+                    Toggle(isOn: $voiceModeEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Mode suara")
+                            Text("Voice note yang selesai ditranskripsi langsung dikirim, dan jawaban asisten dibacakan otomatis. Bila nonaktif, transkripsi masuk ke kolom tulis untuk diperiksa dulu sebelum dikirim.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Voice note memakai pengenalan ucapan iOS (butuh izin mikrofon; model bahasa bisa memakai jaringan bila belum terunduh di perangkat). Tombol speaker di bawah tiap jawaban asisten membacakan jawaban kapan pun, apa pun pengaturan ini.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Agent & Tools") {
