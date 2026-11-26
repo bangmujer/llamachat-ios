@@ -43,6 +43,10 @@ public struct ModelManagerView: View {
                     }
                     ForEach(models) { descriptor in
                         HStack {
+                            ModelIconView(
+                                avatarURL: avatarURL(for: descriptor.fileName),
+                                displayName: descriptor.fileName
+                            )
                             VStack(alignment: .leading) {
                                 Text(descriptor.fileName)
                                     .lineLimit(1)
@@ -136,7 +140,7 @@ public struct ModelManagerView: View {
                 }
 
                 Section {
-                    Text("Build ini: Live Activity download di Dynamic Island + Jeda memakai resume per byte; tombol Batal meminta konfirmasi dulu.")
+                    Text("Build ini: ikon model dari server + Live Activity download di Dynamic Island + Jeda memakai resume per byte; tombol Batal meminta konfirmasi dulu.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("Live Activity: \(downloader.liveActivityStatus)")
@@ -210,42 +214,45 @@ public struct ModelManagerView: View {
     private func catalogRow(_ entry: CatalogModel) -> some View {
         let downloaded = models.contains { $0.fileName == entry.fileName }
         let active = downloader.downloads.first { $0.fileName == entry.fileName }
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.name)
-                        .lineLimit(1)
-                    Text("\(entry.quant) · \(entry.sizeDisplay) · RAM \(entry.ramEstimateDisplay)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if downloaded {
-                    Text("Terunduh")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else if let active {
-                    catalogDownloadState(active)
-                } else {
-                    Button("Unduh") {
-                        downloader.startDownload(
-                            url: entry.url,
-                            fileName: entry.fileName,
-                            expectedSizeBytes: entry.exactSizeBytes
-                        )
+        HStack(alignment: .top, spacing: 12) {
+            ModelIconView(avatarURL: entry.avatarURL, displayName: entry.name)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name)
+                            .lineLimit(1)
+                        Text("\(entry.quant) · \(entry.sizeDisplay) · RAM \(entry.ramEstimateDisplay)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.bordered)
+                    Spacer()
+                    if downloaded {
+                        Text("Terunduh")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if let active {
+                        catalogDownloadState(active)
+                    } else {
+                        Button("Unduh") {
+                            downloader.startDownload(
+                                url: entry.url,
+                                fileName: entry.fileName,
+                                expectedSizeBytes: entry.exactSizeBytes
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-            }
-            Text(entry.tagline)
-                .font(.subheadline)
-            Text("Cocok untuk: \(entry.strengths)")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if let note = entry.note {
-                Text(note)
+                Text(entry.tagline)
+                    .font(.subheadline)
+                Text("Cocok untuk: \(entry.strengths)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if let note = entry.note {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 2)
@@ -275,8 +282,14 @@ public struct ModelManagerView: View {
     @ViewBuilder
     private func downloadRow(_ item: ModelDownloadManager.DownloadItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(item.fileName)
-                .lineLimit(1)
+            HStack(spacing: 12) {
+                ModelIconView(
+                    avatarURL: avatarURL(for: item.fileName),
+                    displayName: item.fileName
+                )
+                Text(item.fileName)
+                    .lineLimit(1)
+            }
             switch item.state {
             case .downloading, .queued, .probing:
                 ProgressView(value: item.progress) {
@@ -366,6 +379,13 @@ public struct ModelManagerView: View {
         }
     }
 
+    /// Ikon server untuk satu nama file: dicocokkan ke entri katalog
+    /// (file di luar katalog — impor manual / URL bebas — tidak punya
+    /// ikon server, jadi monogram saja).
+    private func avatarURL(for fileName: String) -> URL? {
+        ModelCatalog.all.first { $0.fileName == fileName }?.avatarURL
+    }
+
     private func startDownload() {
         let urlString = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: urlString) else {
@@ -396,6 +416,56 @@ public struct ModelManagerView: View {
             }
             refresh()
         }
+    }
+}
+
+/// Ikon model dari server: avatar profil publisher di Hugging Face,
+/// dimuat langsung dari endpoint avatar server (`/api/avatars/…`,
+/// berlaku untuk user maupun organisasi). Selama memuat, gagal
+/// dimuat (offline, publisher tanpa avatar), atau tidak ada URL
+/// avatarnya, tampil monogram huruf awal nama model di atas warna
+/// yang diturunkan dari namanya — baris model tidak pernah kosong
+/// atau rusak. Gambar di-cache oleh URLCache sistem, jadi buka
+/// Model Manager berikutnya tidak mengunduh ulang ikon yang sama.
+private struct ModelIconView: View {
+    let avatarURL: URL?
+    let displayName: String
+
+    var body: some View {
+        ZStack {
+            monogram
+            if let avatarURL {
+                AsyncImage(url: avatarURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Color.clear
+                    }
+                }
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var monogram: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(monogramColor)
+            Text(String(displayName.prefix(1)).uppercased())
+                .font(.headline)
+                .bold()
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var monogramColor: Color {
+        let palette: [Color] = [.blue, .teal, .green, .orange, .pink, .purple, .indigo, .mint]
+        let hash = displayName.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
+        return palette[abs(hash) % palette.count]
     }
 }
 
